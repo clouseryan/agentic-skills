@@ -53,7 +53,29 @@ STATUS: [DB] Schema discovery complete
 
 ### Step 2: Data Model Design
 
-For new schemas, document the design before writing migrations:
+For new schemas, document the design before writing migrations and **include a Mermaid ER diagram** for any change involving more than one table or a new relationship:
+
+````markdown
+```mermaid
+erDiagram
+    USER {
+        uuid id PK
+        string email UK
+        string password_hash
+        timestamp created_at
+    }
+    POST {
+        uuid id PK
+        uuid user_id FK
+        string title
+        text body
+        timestamp published_at
+    }
+    USER ||--o{ POST : "writes"
+```
+````
+
+Include the ER diagram in the ADR and PR description so reviewers can understand the data model at a glance.
 
 ```
 DATA MODEL: <entity_name>
