@@ -28,6 +28,8 @@ PATTERNS_FILE = 'patterns.json'
 CONTEXT_FILE = 'context.md'
 STATUS_FILE = 'status.json'
 DECISIONS_DIR = 'decisions'
+REQUIREMENTS_DIR = 'requirements'
+CONTEXT_HISTORY_DIR = 'context-history'
 
 
 def find_workspace(project_root: str | None = None) -> Path:
@@ -51,6 +53,8 @@ def cmd_init(args):
     workspace = find_workspace(args.project_root)
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / DECISIONS_DIR).mkdir(exist_ok=True)
+    (workspace / REQUIREMENTS_DIR).mkdir(exist_ok=True)
+    (workspace / CONTEXT_HISTORY_DIR).mkdir(exist_ok=True)
 
     # Initialize patterns.json if missing
     patterns_file = workspace / PATTERNS_FILE
@@ -104,6 +108,8 @@ _(Each agent appends findings here)_
     print(f"  {workspace / CONTEXT_FILE}")
     print(f"  {workspace / STATUS_FILE}")
     print(f"  {workspace / DECISIONS_DIR}/")
+    print(f"  {workspace / REQUIREMENTS_DIR}/")
+    print(f"  {workspace / CONTEXT_HISTORY_DIR}/")
 
 
 def cmd_status(args):
@@ -329,6 +335,88 @@ def cmd_complete_task(args):
     sys.exit(1)
 
 
+def cmd_compress_context(args):
+    """
+    Summarize and compress context.md to prevent unbounded growth.
+
+    Reads the current context.md, archives it with a timestamp, then writes
+    a condensed version. If the anthropic package is available and
+    ANTHROPIC_API_KEY is set, uses Claude to produce an intelligent summary.
+    Otherwise falls back to keeping only the most recent entries.
+    """
+    workspace = find_workspace(args.project_root)
+    context_file = workspace / CONTEXT_FILE
+    history_dir = workspace / CONTEXT_HISTORY_DIR
+
+    if not context_file.exists():
+        print("No context.md found. Run: workspace.py init")
+        sys.exit(1)
+
+    content = context_file.read_text()
+    original_size = len(content)
+
+    if original_size < 4000:
+        print(f"Context is only {original_size} chars — compression not needed yet.")
+        return
+
+    # Archive the full content before compressing
+    history_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    archive_path = history_dir / f'context-{timestamp}.md'
+    archive_path.write_text(content)
+    print(f"✓ Archived original context to {archive_path}")
+
+    # Try Claude-powered summarization
+    compressed = None
+    try:
+        import anthropic as _anthropic
+        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        if api_key:
+            client = _anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model='claude-haiku-4-5-20251001',
+                max_tokens=2000,
+                system=(
+                    "You are a technical summarizer for a software development team workspace. "
+                    "Compress this context document by: "
+                    "1) Keeping the Project Overview and Patterns sections intact. "
+                    "2) Summarizing the Agent Notes section into a concise bullet list of key decisions, "
+                    "findings, and current state — removing redundant or superseded entries. "
+                    "3) Preserving all file paths, ADR references, and specific technical decisions. "
+                    "Output clean markdown."
+                ),
+                messages=[{'role': 'user', 'content': f"Compress this workspace context:\n\n{content[:12000]}"}],
+            )
+            compressed = response.content[0].text
+            print("✓ Used Claude to intelligently compress context")
+        else:
+            print("Note: ANTHROPIC_API_KEY not set — falling back to truncation")
+    except ImportError:
+        print("Note: anthropic package not installed — falling back to truncation")
+    except Exception as e:
+        print(f"Note: Claude summarization failed ({e}) — falling back to truncation")
+
+    if compressed is None:
+        # Fallback: keep header sections + last 3000 chars of agent notes
+        lines = content.splitlines()
+        cutoff = max(0, len(lines) - 80)  # keep last ~80 lines
+        compressed = (
+            f"# Dev Team Workspace (Compressed {timestamp})\n\n"
+            f"_Original archived to {archive_path.name}. Showing recent entries only._\n\n"
+            + '\n'.join(lines[cutoff:])
+        )
+
+    header = (
+        f"\n\n---\n_Context compressed {datetime.now().strftime('%Y-%m-%d %H:%M')}. "
+        f"Full history in {CONTEXT_HISTORY_DIR}/._\n\n---\n\n"
+    )
+    context_file.write_text(compressed + header)
+
+    new_size = len(context_file.read_text())
+    reduction = round((1 - new_size / original_size) * 100)
+    print(f"✓ Context compressed: {original_size} → {new_size} chars ({reduction}% reduction)")
+
+
 # Import re for slug generation (needed by cmd_new_adr)
 import re
 
@@ -387,6 +475,13 @@ def main():
     p_complete = subparsers.add_parser('complete-task', help='Mark a task as done')
     p_complete.add_argument('--task-id', required=True, help='Task ID to complete')
     p_complete.set_defaults(func=cmd_complete_task)
+
+    # compress-context
+    p_compress = subparsers.add_parser(
+        'compress-context',
+        help='Summarize and compress context.md (archives full history first)',
+    )
+    p_compress.set_defaults(func=cmd_compress_context)
 
     args = parser.parse_args()
 
