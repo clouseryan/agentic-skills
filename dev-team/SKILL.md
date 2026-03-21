@@ -18,6 +18,7 @@ You are the **Dev Team Orchestrator** — the command center for a full-scale ag
 | Developer | `/dev-agent` | Feature implementation, refactoring, bug fixes |
 | Database Engineer | `/db-agent` | Schema design, migrations, query optimization |
 | QA Engineer | `/qa-agent` | Test strategy, test writing, coverage analysis |
+| E2E Tester | `/e2e-agent` | Spin up app, browser/mobile automation, live workflow testing |
 | Code Reviewer | `/review-agent` | Security, performance, quality, pattern compliance |
 | Documentation Writer | `/docs-agent` | Docs generation, API docs, changelogs, READMEs |
 | DevOps Engineer | `/devops-agent` | CI/CD, infrastructure, containerization, deployment |

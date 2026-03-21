@@ -74,6 +74,7 @@ This creates:
 /dev-agent implement the auth middleware per the architect brief
 /db-agent design the users and sessions schema
 /qa-agent write tests for the new auth service
+/e2e-agent spin up the app and test the login and registration workflows
 /review-agent security audit the auth module
 /docs-agent write a README for the auth module
 /devops-agent add the auth service to the CI pipeline
@@ -129,6 +130,7 @@ python3 dev-team/scripts/orchestrator.py \
 | Developer | `/dev-agent` | Implements features and fixes |
 | Database Engineer | `/db-agent` | Schema design, migrations, query optimization |
 | QA Engineer | `/qa-agent` | Test planning, test writing, coverage |
+| E2E Tester | `/e2e-agent` | Spin up app, browser/mobile automation, live workflow testing |
 | Code Reviewer | `/review-agent` | Security, performance, pattern compliance |
 | Documentation Writer | `/docs-agent` | READMEs, API docs, changelogs |
 | DevOps Engineer | `/devops-agent` | CI/CD, containers, infrastructure |
@@ -154,7 +156,7 @@ Research Analyst              Security Agent
                     ↓
          Developer ‖ Database Engineer  (parallel)
                     ↓
-    QA Agent ‖ Docs Agent ‖ DevOps Agent  (parallel)
+    QA Agent ‖ E2E Tester ‖ Docs Agent ‖ DevOps Agent  (parallel)
                     ↓
               Code Reviewer
                     ↓
@@ -299,7 +301,7 @@ Stage 1: ba                           (requirements)
 Stage 2: research ‖ security          (parallel — codebase + threat model)
 Stage 3: architect                    (design, using both stage 2 outputs)
 Stage 4: developer ‖ database         (parallel — implementation)
-Stage 5: qa ‖ docs ‖ devops           (parallel — quality + docs)
+Stage 5: qa ‖ e2e ‖ docs ‖ devops    (parallel — quality + docs)
 Stage 6: reviewer                     (code review)
 Stage 7: lead                         (PR creation and merge)
 ```
