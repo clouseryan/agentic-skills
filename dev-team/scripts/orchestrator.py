@@ -35,6 +35,83 @@ except ImportError:
     print("Run: pip install anthropic")
     sys.exit(1)
 
+# Optional store backend (Redis or JSON fallback)
+def _load_store(workspace_dir):
+    """Return a Store instance or None if store.py is unavailable."""
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from store import Store
+        return Store(workspace_dir)
+    except Exception:
+        return None
+
+
+def _check_security_gate(store) -> tuple[bool, str]:
+    """
+    Return (blocked, reason). Blocks the pipeline if the security agent
+    issued a BLOCKED verdict that hasn't been cleared.
+    """
+    if store is None:
+        return False, ''
+    verdict = store.get_security_verdict()
+    if verdict and verdict.get('verdict') == 'BLOCKED':
+        critical = verdict.get('critical_count', 0)
+        high = verdict.get('high_count', 0)
+        findings = verdict.get('findings', [])
+        reason = (
+            f"Security verdict: BLOCKED "
+            f"(critical={critical}, high={high})\n"
+            + '\n'.join(f"  - {f}" for f in findings[:5])
+        )
+        return True, reason
+    return False, ''
+
+
+def _check_feedback_gate(store, stage_num: int) -> tuple[bool, list]:
+    """Return (has_blocking, blocking_items) for the current stage."""
+    if store is None:
+        return False, []
+    blocking = [
+        f for f in store.get_feedback(unresolved_only=True)
+        if f.get('severity') == 'BLOCKING'
+    ]
+    return bool(blocking), blocking
+
+
+def _snapshot_files(store, file_paths: list, stage_num: int, project_root: Path) -> None:
+    """Record before-snapshots of files for rollback purposes."""
+    if store is None:
+        return
+    for rel_path in file_paths:
+        abs_path = project_root / rel_path
+        before = abs_path.read_text(errors='replace') if abs_path.exists() else None
+        store.log_file_snapshot(rel_path, before, stage_num)
+
+
+def _build_selective_context(context: dict, agent_key: str, client, model: str) -> str:
+    """
+    Build a context block with only the outputs most relevant to this agent.
+    Each agent type gets the specific upstream outputs it needs rather than
+    the entire accumulated context, keeping prompts focused and token-efficient.
+    """
+    # Define which prior agents each agent actually needs
+    RELEVANT_PRIOR = {
+        'research':  [],
+        'security':  ['ba'],
+        'architect': ['ba', 'research', 'security'],
+        'developer': ['architect', 'research'],
+        'database':  ['architect', 'research'],
+        'qa':        ['developer', 'database', 'architect'],
+        'e2e':       ['developer', 'database'],
+        'docs':      ['developer', 'database', 'architect', 'ba'],
+        'devops':    ['developer', 'database', 'architect'],
+        'reviewer':  ['developer', 'database', 'qa', 'security'],
+        'lead':      ['reviewer', 'security'],
+    }
+    relevant_keys = RELEVANT_PRIOR.get(agent_key, list(context.keys()))
+    filtered = {k: v for k, v in context.items() if k in relevant_keys}
+    return build_context_block(filtered, client, model, summarize=True)
+
 
 # ─── Agent Definitions ─────────────────────────────────────────────────────────
 
@@ -101,12 +178,24 @@ When given a task or codebase to review, you will:
 1. Identify the attack surface (entry points, trust boundaries, data assets)
 2. Apply STRIDE threat modeling to key components
 3. Scan for dependency vulnerabilities (CVEs in package.json, requirements.txt, etc.)
-4. Detect patterns suggesting hardcoded secrets or credentials
+4. Detect hardcoded secrets or credentials
 5. Flag compliance implications (GDPR, SOC2, HIPAA, PCI-DSS)
 6. Rate every finding: CRITICAL / HIGH / MEDIUM / LOW
 7. Provide specific remediation for every finding
 
-Output: threat model → dependency findings → static analysis findings → compliance flags → verdict (CLEAR / WARNINGS / REMEDIATION REQUIRED / BLOCKED)""",
+CRITICAL: After completing your assessment, write your verdict to the workspace:
+  python3 .dev-team/../scripts/workspace.py set-security-verdict \\
+    --verdict <CLEAR|WARNINGS|REMEDIATION_REQUIRED|BLOCKED> \\
+    --findings "<finding1>,<finding2>" \\
+    --critical <N> --high <N>
+
+Verdict rules:
+  BLOCKED           — any CRITICAL finding or hardcoded secret in git history
+  REMEDIATION_REQUIRED — any HIGH finding
+  WARNINGS          — only MEDIUM/LOW findings
+  CLEAR             — no findings
+
+Output: threat model → dependency findings → static analysis → compliance flags → verdict""",
     },
     'developer': {
         'name': 'Developer',
@@ -142,15 +231,24 @@ Always flag potentially dangerous migrations (drops, large table changes).""",
         'name': 'QA Engineer',
         'emoji': '🧪',
         'system': """You are the QA Engineer on an agentic software development team.
-Your role is to write tests that verify the implemented features.
+Your role is to write tests that verify implemented features AND confirm they pass.
 
 When given implementation details, you will:
-1. Identify what needs to be tested (happy paths, edge cases, error cases)
-2. Write tests following the exact test patterns of the codebase
-3. Verify that tests actually run and pass
-4. Report coverage of the new code
+1. Detect the test framework (pytest, jest, vitest, go test, etc.) from config files
+2. Read 2-3 existing test files to match the exact style
+3. Write tests covering happy paths, edge cases, and error cases
+4. RUN the tests immediately after writing them using the project's test command
+5. Fix any failing tests before reporting completion
+6. Report exact pass/fail counts and coverage delta
 
-Match the project's test framework and style exactly.""",
+CRITICAL: Always run tests after writing them. Never leave failing tests.
+Use the Bash tool to execute: pytest / npm test / go test ./... / etc.
+
+Output format:
+  TESTS WRITTEN: <file> — <N> tests
+  TEST RUN: <N> passing / <M> failing
+  COVERAGE: <before>% → <after>%
+  REGRESSIONS: none | <list any broken existing tests>""",
     },
     'reviewer': {
         'name': 'Code Reviewer',
@@ -244,7 +342,12 @@ Use the `gh` CLI for all GitHub operations.""",
         'system': """You are the Lead Engineer on an agentic software development team.
 Your role is to manage the full GitHub pull request lifecycle.
 
-When given a task, you will:
+FIRST: Before doing anything else, check the security verdict:
+  python3 scripts/workspace.py get-security-verdict
+  If verdict is BLOCKED, do NOT create or merge a PR. Post the security findings
+  as a comment on the relevant issue and stop. Report: PIPELINE BLOCKED — security issues must be resolved.
+
+When given a task (and security is not blocked), you will:
 1. Create pull requests with well-structured descriptions (summary, changes, testing checklist)
 2. Review PRs using the full security/performance/correctness/pattern checklist
 3. Post structured inline comments with severity ratings and specific fix suggestions
@@ -326,13 +429,16 @@ def build_context_block(context: dict, client, model: str, summarize: bool = Tru
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 class DevTeamOrchestrator:
-    def __init__(self, model: str = 'claude-sonnet-4-6', dry_run: bool = False):
+    def __init__(self, model: str = 'claude-sonnet-4-6', dry_run: bool = False,
+                 workspace_root: str | None = None):
         self.client = anthropic.Anthropic() if not dry_run else None
         self.model = model
         self.dry_run = dry_run
         self.context: dict[str, str] = {}  # agent_key → full output
         self.results: dict[str, str] = {}
         self.start_time = datetime.now()
+        self.workspace_root = workspace_root  # explicit workspace dir override (multi-repo)
+        self._store = None  # initialized lazily in run_* methods
 
     def status(self, phase: str, agent: str, detail: str = ''):
         """Print a status update."""
@@ -360,8 +466,8 @@ class DevTeamOrchestrator:
             print(result)
             return result
 
-        context_str = context_override or build_context_block(
-            self.context, self.client, self.model, summarize=True
+        context_str = context_override or _build_selective_context(
+            self.context, agent_key, self.client, self.model
         )
 
         user_message = f"""Task: {task}
@@ -408,11 +514,41 @@ Please proceed with your analysis and output. Report status as you work."""
 
         enriched_task = self._enrich_task(task, project_root)
 
+        workspace_dir = Path(project_root) / '.dev-team' if not self.workspace_root else Path(self.workspace_root)
+        self._store = _load_store(workspace_dir)
+
         for agent_key in pipeline:
             if agent_key not in AGENTS:
                 print(f"WARNING: Unknown agent '{agent_key}', skipping", file=sys.stderr)
                 continue
+
+            # Security gate before lead agent
+            if agent_key == 'lead':
+                blocked, reason = _check_security_gate(self._store)
+                if blocked:
+                    print(f"\nPIPELINE BLOCKED — Security verdict requires remediation:\n{reason}", file=sys.stderr)
+                    print("Resolve security findings and re-run from the lead stage.")
+                    break
+
+            # Feedback gate — pause on blocking feedback
+            has_blocking, blocking = _check_feedback_gate(self._store, stage_num=0)
+            if has_blocking:
+                print(f"\nPIPELINE PAUSED — {len(blocking)} blocking feedback item(s):", file=sys.stderr)
+                for f in blocking:
+                    print(f"  [{f['from']} → {f.get('to','all')}] {f['message']}", file=sys.stderr)
+                print("Resolve blocking feedback via: workspace.py push-feedback --severity INFO (to clear)", file=sys.stderr)
+                break
+
             self.run_agent(agent_key, enriched_task)
+
+            # After dev/database stages, check for dependency conflicts
+            if agent_key in ('developer', 'database') and self._store:
+                conflicts = self._store.get_dependency_conflicts()
+                if conflicts:
+                    print(f"\nDEPENDENCY CONFLICTS DETECTED ({len(conflicts)}):", file=sys.stderr)
+                    for c in conflicts:
+                        print(f"  {c['ecosystem']}:{c['name']} — {len(c['conflicts'])} conflict(s)", file=sys.stderr)
+
             time.sleep(0.5)
 
         self._print_completion_summary()
@@ -443,6 +579,9 @@ Please proceed with your analysis and output. Report status as you work."""
 
         enriched_task = self._enrich_task(task, project_root)
 
+        workspace_dir = Path(project_root) / '.dev-team' if not self.workspace_root else Path(self.workspace_root)
+        self._store = _load_store(workspace_dir)
+
         for stage_num, stage_agents in enumerate(pipeline, 1):
             # Filter out unknown agents
             valid_agents = [a for a in stage_agents if a in AGENTS]
@@ -452,16 +591,52 @@ Please proceed with your analysis and output. Report status as you work."""
             if not valid_agents:
                 continue
 
+            # Security gate: block before lead stage
+            if 'lead' in valid_agents:
+                blocked, reason = _check_security_gate(self._store)
+                if blocked:
+                    print(f"\n{'═' * 60}")
+                    print(f"PIPELINE BLOCKED at stage {stage_num} — Security verdict: BLOCKED")
+                    print(reason)
+                    print("Fix the reported security issues, clear the verdict, and re-run.")
+                    print(f"{'═' * 60}")
+                    break
+
+            # Feedback gate: pause on any blocking feedback before this stage
+            has_blocking, blocking = _check_feedback_gate(self._store, stage_num)
+            if has_blocking:
+                print(f"\n{'═' * 60}")
+                print(f"PIPELINE PAUSED at stage {stage_num} — {len(blocking)} blocking feedback item(s):")
+                for f in blocking:
+                    print(f"  [{f['from']} → {f.get('to','all')}] {f['message']}")
+                print("Resolve via: workspace.py push-feedback (clear the blocking message)")
+                print(f"{'═' * 60}")
+                break
+
             print(f"\n{'─' * 60}")
             print(f"STAGE {stage_num}: {' ‖ '.join(AGENTS[a]['name'] for a in valid_agents)}")
             print(f"{'─' * 60}")
 
+            # Log stage start for rollback
+            if self._store:
+                self._store.log_stage_start(stage_num, valid_agents)
+
             if len(valid_agents) == 1:
-                # Single agent — run directly
                 self.run_agent(valid_agents[0], enriched_task)
             else:
-                # Multiple agents — run in parallel, then merge results into context
                 self._run_stage_parallel(valid_agents, enriched_task)
+
+            # Log stage completion checkpoint
+            if self._store:
+                self._store.log_stage_complete(stage_num, valid_agents, success=True)
+
+            # After dev/database stages, surface dependency conflicts
+            if any(a in ('developer', 'database') for a in valid_agents) and self._store:
+                conflicts = self._store.get_dependency_conflicts()
+                if conflicts:
+                    print(f"\nDEPENDENCY CONFLICTS ({len(conflicts)}) — review before proceeding:")
+                    for c in conflicts:
+                        print(f"  {c['ecosystem']}:{c['name']} — {len(c['conflicts'])} conflicting version(s)")
 
             time.sleep(0.3)
 
@@ -548,7 +723,7 @@ Please proceed with your analysis and output. Report status as you work."""
 
     def _enrich_task(self, task: str, project_root: str) -> str:
         """Load workspace context and prepend it to the task description."""
-        workspace = Path(project_root) / '.dev-team'
+        workspace = Path(self.workspace_root) if self.workspace_root else Path(project_root) / '.dev-team'
         workspace_context = ''
 
         if workspace.exists():
@@ -573,6 +748,16 @@ Please proceed with your analysis and output. Report status as you work."""
                     workspace_context += '\n\n## Prior Requirements Documents\n'
                     for f in req_files[:3]:
                         workspace_context += f'\n### {f.name}\n{f.read_text()[:1000]}\n'
+
+        # Inject relevant domain patterns from the pattern library
+        try:
+            from domain_patterns import get_relevant_patterns
+            domain_hints = get_relevant_patterns(task)
+            if domain_hints:
+                workspace_context += '\n\n## Relevant Architecture Patterns\n'
+                workspace_context += '\n'.join(f'- {p}' for p in domain_hints)
+        except Exception:
+            pass
 
         return f"{task}{workspace_context}"
 
@@ -610,6 +795,8 @@ Examples:
     )
     parser.add_argument('--task', required=True, help='The task or goal to accomplish')
     parser.add_argument('--root', default='.', help='Project root directory')
+    parser.add_argument('--workspace-root', default=None,
+                        help='Override workspace directory directly (multi-repo: point multiple projects at a shared .dev-team/)')
     parser.add_argument(
         '--agents',
         help=f'Comma-separated agent pipeline. Available: {available_agents}',
@@ -640,7 +827,8 @@ Examples:
 
     agent_list = [a.strip() for a in args.agents.split(',')] if args.agents else None
 
-    orchestrator = DevTeamOrchestrator(model=args.model, dry_run=args.dry_run)
+    orchestrator = DevTeamOrchestrator(model=args.model, dry_run=args.dry_run,
+                                        workspace_root=args.workspace_root)
 
     if args.parallel and agent_list:
         results = orchestrator.run_parallel(args.task, agent_list, args.root)

@@ -329,6 +329,133 @@ def aggregate_ts_patterns(root: Path, ts_files: list[Path]) -> dict:
     }
 
 
+# ─── Go Analysis ───────────────────────────────────────────────────────────────
+
+def analyze_go_patterns(root: Path, go_files: list[Path]) -> dict:
+    """Extract patterns from Go source files using regex."""
+    func_names, type_names, iface_names = [], [], []
+    uses_errors_as, uses_fmt_errorf, uses_goroutines = 0, 0, 0
+    packages: Counter = Counter()
+
+    for path in go_files[:50]:
+        try:
+            source = path.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+
+        for m in re.finditer(r'^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(', source, re.M):
+            func_names.append(m.group(1))
+        for m in re.finditer(r'^type\s+(\w+)\s+struct', source, re.M):
+            type_names.append(m.group(1))
+        for m in re.finditer(r'^type\s+(\w+)\s+interface', source, re.M):
+            iface_names.append(m.group(1))
+        for m in re.finditer(r'^package\s+(\w+)', source, re.M):
+            packages[m.group(1)] += 1
+        if 'errors.As(' in source or 'errors.Is(' in source:
+            uses_errors_as += 1
+        if 'fmt.Errorf(' in source:
+            uses_fmt_errorf += 1
+        if 'go func' in source or 'go ' in source:
+            uses_goroutines += 1
+
+    return {
+        'function_naming': detect_naming_convention(func_names),
+        'type_naming': detect_naming_convention(type_names),
+        'interface_naming': detect_naming_convention(iface_names),
+        'top_packages': [p for p, _ in packages.most_common(5)],
+        'error_style': 'errors.As/Is' if uses_errors_as > uses_fmt_errorf else 'fmt.Errorf',
+        'uses_goroutines': uses_goroutines > 0,
+        'file_count': len(go_files),
+    }
+
+
+# ─── Rust Analysis ─────────────────────────────────────────────────────────────
+
+def analyze_rust_patterns(root: Path, rs_files: list[Path]) -> dict:
+    """Extract patterns from Rust source files using regex."""
+    fn_names, struct_names, trait_names = [], [], []
+    uses_result, uses_option, uses_anyhow, uses_thiserror = 0, 0, 0, 0
+    uses_async = 0
+
+    for path in rs_files[:50]:
+        try:
+            source = path.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+
+        for m in re.finditer(r'(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*[(<]', source):
+            fn_names.append(m.group(1))
+        for m in re.finditer(r'(?:pub\s+)?struct\s+(\w+)', source):
+            struct_names.append(m.group(1))
+        for m in re.finditer(r'(?:pub\s+)?trait\s+(\w+)', source):
+            trait_names.append(m.group(1))
+        if 'Result<' in source:
+            uses_result += 1
+        if 'Option<' in source:
+            uses_option += 1
+        if 'anyhow' in source:
+            uses_anyhow += 1
+        if 'thiserror' in source:
+            uses_thiserror += 1
+        if 'async fn' in source:
+            uses_async += 1
+
+    error_style = 'anyhow' if uses_anyhow > uses_thiserror else ('thiserror' if uses_thiserror else 'std::error::Error')
+    return {
+        'function_naming': detect_naming_convention(fn_names),
+        'struct_naming': detect_naming_convention(struct_names),
+        'trait_naming': detect_naming_convention(trait_names),
+        'error_handling': error_style,
+        'uses_result': uses_result > 0,
+        'uses_async': uses_async > 0,
+        'file_count': len(rs_files),
+    }
+
+
+# ─── Java/Kotlin Analysis ──────────────────────────────────────────────────────
+
+def analyze_java_patterns(root: Path, java_files: list[Path]) -> dict:
+    """Extract patterns from Java/Kotlin source files using regex."""
+    method_names, class_names, iface_names = [], [], []
+    annotations: Counter = Counter()
+    uses_lombok, uses_spring, uses_jakarta = 0, 0, 0
+
+    for path in java_files[:50]:
+        try:
+            source = path.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+
+        for m in re.finditer(r'(?:public|private|protected|static|\s)+\w[\w<>\[\]]*\s+(\w+)\s*\(', source):
+            n = m.group(1)
+            if n not in {'if', 'for', 'while', 'switch', 'catch'}:
+                method_names.append(n)
+        for m in re.finditer(r'(?:public\s+)?(?:abstract\s+)?class\s+(\w+)', source):
+            class_names.append(m.group(1))
+        for m in re.finditer(r'(?:public\s+)?interface\s+(\w+)', source):
+            iface_names.append(m.group(1))
+        for m in re.finditer(r'@(\w+)', source):
+            annotations[m.group(1)] += 1
+        if 'lombok' in source:
+            uses_lombok += 1
+        if 'springframework' in source or '@SpringBoot' in source:
+            uses_spring += 1
+        if 'jakarta' in source or 'javax' in source:
+            uses_jakarta += 1
+
+    top_annotations = [a for a, _ in annotations.most_common(8)]
+    return {
+        'method_naming': detect_naming_convention(method_names),
+        'class_naming': detect_naming_convention(class_names),
+        'interface_naming': detect_naming_convention(iface_names),
+        'top_annotations': top_annotations,
+        'uses_lombok': uses_lombok > 0,
+        'uses_spring': uses_spring > 0,
+        'uses_jakarta_ee': uses_jakarta > 0,
+        'file_count': len(java_files),
+    }
+
+
 def detect_test_patterns(files: list[Path]) -> dict:
     """Analyze testing patterns."""
     test_files = [
@@ -386,6 +513,8 @@ def run_analysis(root: Path) -> dict:
     ts_files = [f for f in files if f.suffix in {'.ts', '.tsx'}]
     js_files = [f for f in files if f.suffix in {'.js', '.jsx', '.mjs'}]
     go_files = [f for f in files if f.suffix == '.go']
+    rs_files = [f for f in files if f.suffix == '.rs']
+    java_files = [f for f in files if f.suffix in {'.java', '.kt'}]
 
     result = {
         'generated_at': __import__('datetime').datetime.now().isoformat(),
@@ -405,10 +534,16 @@ def run_analysis(root: Path) -> dict:
         result['languages']['typescript'] = aggregate_ts_patterns(root, all_ts)
 
     if go_files:
-        result['languages']['go'] = {
-            'file_count': len(go_files),
-            'note': 'Go pattern analysis uses file naming; see explore output for details',
-        }
+        print(f"[ANALYZE] Analyzing {len(go_files)} Go files...", file=sys.stderr)
+        result['languages']['go'] = analyze_go_patterns(root, go_files)
+
+    if rs_files:
+        print(f"[ANALYZE] Analyzing {len(rs_files)} Rust files...", file=sys.stderr)
+        result['languages']['rust'] = analyze_rust_patterns(root, rs_files)
+
+    if java_files:
+        print(f"[ANALYZE] Analyzing {len(java_files)} Java/Kotlin files...", file=sys.stderr)
+        result['languages']['java'] = analyze_java_patterns(root, java_files)
 
     # Generate human-readable summary
     result['summary'] = generate_summary(result)
@@ -440,15 +575,35 @@ def generate_summary(analysis: dict) -> list[str]:
             patterns.append(f"{lang.capitalize()} functions: {lang_data['function_naming']}")
         if 'class_naming' in lang_data:
             patterns.append(f"{lang.capitalize()} classes: {lang_data['class_naming']}")
+        if 'type_naming' in lang_data:
+            patterns.append(f"{lang.capitalize()} types: {lang_data['type_naming']}")
+        if 'struct_naming' in lang_data:
+            patterns.append(f"{lang.capitalize()} structs: {lang_data['struct_naming']}")
+        if 'method_naming' in lang_data:
+            patterns.append(f"{lang.capitalize()} methods: {lang_data['method_naming']}")
         if lang_data.get('uses_type_hints'):
             patterns.append(f"{lang.capitalize()}: uses type hints/annotations")
         if lang_data.get('uses_async'):
             patterns.append(f"{lang.capitalize()}: uses async/await")
+        if lang_data.get('uses_goroutines'):
+            patterns.append(f"Go: uses goroutines/concurrency")
+        if 'error_style' in lang_data:
+            patterns.append(f"{lang.capitalize()} error handling: {lang_data['error_style']}")
+        if 'error_handling' in lang_data:
+            patterns.append(f"{lang.capitalize()} error handling: {lang_data['error_handling']}")
+        if lang_data.get('uses_spring'):
+            patterns.append("Java: Spring framework")
+        if lang_data.get('uses_lombok'):
+            patterns.append("Java: Lombok annotations")
+        if lang_data.get('top_annotations'):
+            patterns.append(f"Java annotations: {', '.join(lang_data['top_annotations'][:4])}")
         if 'docstring_style' in lang_data and lang_data['docstring_style'] != 'none':
             patterns.append(f"{lang.capitalize()} docs: {lang_data['docstring_style']} style docstrings")
         if lang_data.get('top_dependencies'):
             top = ', '.join(lang_data['top_dependencies'][:5])
             patterns.append(f"{lang.capitalize()} key deps: {top}")
+        if lang_data.get('top_packages'):
+            patterns.append(f"Go packages: {', '.join(lang_data['top_packages'])}")
 
     return patterns
 

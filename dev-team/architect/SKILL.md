@@ -84,7 +84,33 @@ Produce a concrete design with these sections:
 ```
 
 #### Data Flow
-<Describe how data moves through the system>
+
+Include a Mermaid diagram for any non-trivial flow. Choose the right diagram type:
+
+- **Sequence diagram** — request/response flows, API interactions
+- **Flowchart** — decision logic, processing pipelines
+- **C4 Component** — service boundaries and dependencies
+
+Example sequence diagram:
+````markdown
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant AuthService
+    participant DB
+
+    Client->>API: POST /login {credentials}
+    API->>AuthService: validate(credentials)
+    AuthService->>DB: query user
+    DB-->>AuthService: user record
+    AuthService-->>API: JWT token
+    API-->>Client: 200 {token}
+```
+````
+
+Always generate at least one diagram for features involving multiple services,
+async flows, or non-obvious data movement.
 
 #### Integration Points
 <What existing code will this touch? What changes are needed there?>

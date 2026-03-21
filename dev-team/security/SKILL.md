@@ -397,6 +397,18 @@ VERDICT:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+**REQUIRED — Write verdict to workspace after every assessment:**
+
+```bash
+python3 <skills-root>/dev-team/scripts/workspace.py set-security-verdict \
+  --verdict <CLEAR|WARNINGS|REMEDIATION_REQUIRED|BLOCKED> \
+  --findings "<finding 1>,<finding 2>" \
+  --critical <N> \
+  --high <N>
+```
+
+This verdict gates the `lead-agent` — a `BLOCKED` verdict will prevent PR creation until it is resolved.
+
 ## Security Agent Principles
 
 - **Security is upstream, not just at review** — threat model before design, don't just check after

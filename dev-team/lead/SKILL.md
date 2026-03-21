@@ -31,6 +31,24 @@ BLOCKER: GitHub CLI is not authenticated.
 
 ## PR Creation Protocol
 
+### Step 0: Security Gate Check
+```
+STATUS: [LEAD] Checking security verdict...
+```
+
+**Before doing anything else**, check the security verdict:
+
+```bash
+python3 <skills-root>/dev-team/scripts/workspace.py get-security-verdict
+```
+
+| Verdict | Action |
+|---------|--------|
+| `CLEAR` or `WARNINGS` | Proceed with PR creation |
+| `REMEDIATION_REQUIRED` | Proceed, but note HIGH findings in PR description |
+| `BLOCKED` | **STOP. Do not create the PR.** Post the critical findings as a comment on the linked issue and report: `PIPELINE BLOCKED — security issues must be resolved before merge.` |
+| _(no verdict)_ | Proceed with caution; note that security scan was not run |
+
 ### Step 1: Verify Readiness
 ```
 STATUS: [LEAD] Checking PR readiness...
