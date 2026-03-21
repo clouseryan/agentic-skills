@@ -1,13 +1,130 @@
 # Dev Team — Agentic Software Development System
 
-A full-scale agentic development team for rapid, pattern-aware changes to any codebase. Works in **Claude Code** (via skills) and **GitHub Copilot** (via agent personas).
+A full-scale agentic development team for rapid, pattern-aware changes to any codebase. Works in **Claude Code** (via skills), **GitHub Copilot** (via agent personas), and **programmatically** via the Anthropic API.
+
+## Getting Started
+
+### Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (for skill commands) or [GitHub Copilot](https://github.com/features/copilot) (for agent personas)
+- Python 3.10+ (for helper scripts)
+- `pip install anthropic` (for `orchestrator.py` and `workspace.py compress-context`)
+- `gh` CLI authenticated (`gh auth login`) for `/lead-agent` and `/triage-agent`
+
+### 1. Install the Skills
+
+**Claude Code — add this directory:**
+
+```bash
+# Add the parent repo as an additional directory (exposes all skills)
+claude --add-dir /path/to/agentic-skills
+
+# Or symlink just the dev-team directory into your Claude skills folder
+ln -s /path/to/agentic-skills/dev-team ~/.claude/skills/dev-team
+```
+
+**GitHub Copilot — copy the instructions file:**
+
+The `.github/copilot-instructions.md` file in this repo provides agent personas for Copilot Chat. Copy or symlink it into your project's `.github/` directory.
+
+### 2. Initialize the Workspace
+
+Run once per project to set up the shared `.dev-team/` context directory:
+
+```bash
+# Initialize workspace directories and files
+python3 /path/to/agentic-skills/dev-team/scripts/workspace.py init --project-root .
+
+# Populate context with project structure
+python3 /path/to/agentic-skills/dev-team/scripts/explore_codebase.py \
+  --root . --output .dev-team/context.md
+
+# Detect code patterns (naming, testing, error handling, imports)
+python3 /path/to/agentic-skills/dev-team/scripts/analyze_patterns.py \
+  --root . --output .dev-team/patterns.json
+```
+
+This creates:
+```
+.dev-team/
+├── context.md          # Project overview and accumulated team findings
+├── patterns.json       # Detected code patterns (auto-generated)
+├── status.json         # Live task and agent status
+├── decisions/          # Architectural Decision Records (ADRs)
+├── requirements/       # BA-produced feature requirement documents
+└── context-history/    # Archived context snapshots (from compress-context)
+```
+
+> **Tip**: Add `.dev-team/` to `.gitignore` to keep it as local session state, or commit it to share context with your team.
+
+### 3. Use the Skills
+
+**Claude Code:**
+
+```bash
+# Let the orchestrator coordinate the whole team
+/dev-team add a user authentication system
+
+# Or invoke individual agents directly
+/ba-agent gather requirements for a notifications feature
+/triage-agent triage all open GitHub issues
+/research-agent how is error handling done in this codebase?
+/sec-agent threat model the new payment feature
+/architect-agent design a caching layer for the API
+/dev-agent implement the auth middleware per the architect brief
+/db-agent design the users and sessions schema
+/qa-agent write tests for the new auth service
+/review-agent security audit the auth module
+/docs-agent write a README for the auth module
+/devops-agent add the auth service to the CI pipeline
+/lead-agent create a PR for all auth changes
+```
+
+**GitHub Copilot Chat:**
+
+```
+"Act as the business analyst. Gather requirements for adding OAuth to this app."
+"Act as the security agent. Threat model the new payment feature."
+"Act as the research analyst. Explore all authentication-related code."
+"Act as the software architect. Design how to add OAuth using existing patterns."
+"Act as the developer. Implement the OAuth callback in src/auth/callback.ts."
+"Act as the lead engineer. Create a PR for this work and review it."
+```
+
+**Programmatic (Anthropic API):**
+
+```bash
+export ANTHROPIC_API_KEY=your-key
+
+# Full staged pipeline (recommended — runs parallel stages for speed)
+python3 dev-team/scripts/orchestrator.py \
+  --task "add user authentication with JWT" \
+  --root /path/to/project \
+  --staged
+
+# Custom sequential pipeline
+python3 dev-team/scripts/orchestrator.py \
+  --task "analyze the payment module for security issues" \
+  --agents security,research,reviewer
+
+# Dry run — see the plan without making API calls
+python3 dev-team/scripts/orchestrator.py \
+  --task "add notifications" \
+  --staged \
+  --dry-run
+```
+
+---
 
 ## The Team
 
 | Agent | Skill Command | Role |
 |-------|--------------|------|
 | Orchestrator | `/dev-team` | Coordinates the whole team, tracks progress |
+| Business Analyst | `/ba-agent` | Requirements gathering, domain research, specs |
+| Issue Triage | `/triage-agent` | GitHub issue classification, complexity, routing |
 | Research Analyst | `/research-agent` | Explores codebases, discovers patterns |
+| Security Agent | `/sec-agent` | Threat modeling, CVE scanning, secrets detection |
 | Software Architect | `/architect-agent` | Designs solutions, writes ADRs |
 | Developer | `/dev-agent` | Implements features and fixes |
 | Database Engineer | `/db-agent` | Schema design, migrations, query optimization |
@@ -15,163 +132,124 @@ A full-scale agentic development team for rapid, pattern-aware changes to any co
 | Code Reviewer | `/review-agent` | Security, performance, pattern compliance |
 | Documentation Writer | `/docs-agent` | READMEs, API docs, changelogs |
 | DevOps Engineer | `/devops-agent` | CI/CD, containers, infrastructure |
+| Lead Engineer | `/lead-agent` | PR creation, review, approval, merge |
 
-## Setup
+---
 
-### Claude Code
+## Workflow
 
-Add this directory to Claude Code:
-
-```bash
-# Option 1: Add the parent directory
-claude --add-dir /path/to/agentic-skills
-
-# Option 2: Symlink just the dev-team skills
-ln -s /path/to/agentic-skills/dev-team ~/.claude/skills/dev-team
-```
-
-Then use skills in any Claude Code session:
-```
-/dev-team add a user authentication system to this project
-/research-agent how is error handling done in this codebase?
-/architect-agent design a caching layer for the API
-/dev-agent implement the auth middleware per the architect brief
-/db-agent design the users and sessions schema
-/qa-agent write tests for the new auth service
-/review-agent security audit the auth module
-/docs-agent write a README for the auth module
-/devops-agent add the ANTHROPIC_API_KEY to the CI pipeline
-```
-
-### GitHub Copilot
-
-Read `.github/copilot-instructions.md` to use agent personas in Copilot Chat:
+### Standard Feature Workflow
 
 ```
-"Act as the research analyst. Explore all authentication-related code in this project."
-"Act as the software architect. Design how to add OAuth to this system."
-"Act as the developer. Implement the auth changes in src/middleware/auth.ts."
+GitHub Issue
+     ↓
+Triage Agent → classifies issue, posts routing plan, applies labels
+     ↓
+Business Analyst → frames problem, researches domain, writes requirements doc
+     ↓                              ↓
+Research Analyst              Security Agent
+(codebase patterns)           (threat model)
+     ↓                              ↓
+           Software Architect (combines both)
+                    ↓
+         Developer ‖ Database Engineer  (parallel)
+                    ↓
+    QA Agent ‖ Docs Agent ‖ DevOps Agent  (parallel)
+                    ↓
+              Code Reviewer
+                    ↓
+             Lead Engineer → create PR → review → merge
 ```
 
-### Programmatic Orchestration (Claude API)
+### Bug Fix Workflow
 
-Use the orchestrator script to run multi-agent pipelines via the Anthropic API:
-
-```bash
-export ANTHROPIC_API_KEY=your-key
-
-# Run the full pipeline
-python3 dev-team/scripts/orchestrator.py \
-  --task "add user authentication with JWT" \
-  --root /path/to/project
-
-# Run specific agents only
-python3 dev-team/scripts/orchestrator.py \
-  --task "analyze the payment module" \
-  --agents research,architect \
-  --root /path/to/project
-
-# Dry run — see plan without API calls
-python3 dev-team/scripts/orchestrator.py \
-  --task "..." \
-  --dry-run
 ```
+GitHub Issue (bug)
+     ↓
+Triage Agent → classifies as bug/small-medium, routes
+     ↓
+Research Analyst → finds root cause and related code
+     ↓
+Developer → implements fix following existing patterns
+     ↓
+Code Reviewer → verifies fix, checks for regressions
+     ↓
+Lead Engineer → PR + merge
+```
+
+### Security Issue Workflow
+
+```
+GitHub Issue (security)
+     ↓
+Triage Agent → escalates immediately, flags if needs private handling
+     ↓
+Security Agent → assesses severity, produces STRIDE analysis
+     ↓
+Developer → applies remediation
+     ↓
+Security Agent → verifies fix, runs final dep scan
+     ↓
+Lead Engineer → PR + merge (on private branch if needed)
+```
+
+---
 
 ## Shared Workspace
 
-The team uses `.dev-team/` in the project root to share context between sessions. Initialize it once per project:
+All agents read and write to `.dev-team/` to share context across sessions:
 
-```bash
-# Initialize workspace
-python3 /path/to/agentic-skills/dev-team/scripts/workspace.py init --project-root .
-
-# Explore codebase structure (populates .dev-team/context.md)
-python3 /path/to/agentic-skills/dev-team/scripts/explore_codebase.py \
-  --root . --output .dev-team/context.md
-
-# Analyze patterns (populates .dev-team/patterns.json)
-python3 /path/to/agentic-skills/dev-team/scripts/analyze_patterns.py \
-  --root . --output .dev-team/patterns.json
-
-# Check team status
-python3 /path/to/agentic-skills/dev-team/scripts/workspace.py status
-```
-
-Workspace structure:
 ```
 .dev-team/
-├── context.md          # Project overview and accumulated findings
-├── patterns.json       # Detected code patterns (auto-generated)
-├── status.json         # Live task and agent status
-└── decisions/          # Architectural Decision Records (ADRs)
-    ├── ADR-001-*.md
-    └── ADR-002-*.md
+├── context.md            # Project overview + accumulated agent findings
+├── patterns.json         # AST-detected code patterns
+├── status.json           # Live task and agent status
+├── decisions/            # Architectural Decision Records
+│   ├── ADR-001-*.md
+│   └── ADR-002-*.md
+├── requirements/         # Feature requirement specs (written by BA agent)
+│   └── <feature>.md
+└── context-history/      # Compressed context archives
+    └── context-<timestamp>.md
 ```
 
-Add `.dev-team/` to your `.gitignore` (workspace is session state) or commit it to share context with your team.
+### Workspace Management
 
-## How It Works
+```bash
+# Initialize (run once per project)
+python3 dev-team/scripts/workspace.py init
 
-### Pattern-First Philosophy
+# Check current status
+python3 dev-team/scripts/workspace.py status
 
-Every agent reads the existing codebase before acting:
-1. The research agent discovers patterns and documents them
-2. All other agents consult `patterns.json` before writing code
-3. New patterns require explicit justification and an ADR
-4. The code reviewer validates pattern compliance
+# Compress context.md when it gets too large (archives full history first)
+python3 dev-team/scripts/workspace.py compress-context
 
-This ensures new code feels native, not foreign.
+# Create a new ADR manually
+python3 dev-team/scripts/workspace.py new-adr --title "Use Redis for session storage"
 
-### Status Reporting
+# List all ADRs
+python3 dev-team/scripts/workspace.py list-adrs
 
-Every agent reports status at each major milestone:
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[RESEARCH] Structural survey complete
-  Languages:   TypeScript, SQL
-  Framework:   Next.js 14
-  Test runner: Jest + testing-library
-  Patterns:    8 patterns documented
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Add a context note
+python3 dev-team/scripts/workspace.py update-context \
+  --key "auth-decision" --value "Using JWT with 24h expiry, refresh tokens in httpOnly cookie"
 ```
 
-### Typical Workflow
-
-```
-User: /dev-team add a notifications feature
-
-Orchestrator → checks workspace, asks for clarification
-      ↓
-Research Agent → explores codebase, finds similar features, documents patterns
-      ↓
-Architect → designs notification system using existing patterns, writes ADR
-      ↓
-DB Agent → designs notification schema, writes migration
-      ↓
-Developer → implements service, hooks, and API routes
-      ↓
-QA Agent → writes tests following existing test patterns
-      ↓
-Reviewer → security + pattern audit, issues verdict
-      ↓
-Docs Agent → updates README and API docs
-      ↓
-Orchestrator → final summary with all changes
-```
+---
 
 ## Helper Scripts
 
 ### `explore_codebase.py`
-Generates a project overview: directory tree, file type distribution, entry points, config files.
+Generates a project overview: directory tree, file type distribution, entry points, config files, language detection.
 
 ```bash
 python3 dev-team/scripts/explore_codebase.py --root . --output .dev-team/context.md
-python3 dev-team/scripts/explore_codebase.py --root . --json  # JSON output
+python3 dev-team/scripts/explore_codebase.py --root . --json   # JSON output
 ```
 
 ### `analyze_patterns.py`
-Detects code patterns using AST analysis: naming conventions, test framework, error handling patterns, top dependencies.
+Detects code patterns using AST analysis: naming conventions, test framework, error handling, import style, top dependencies.
 
 ```bash
 python3 dev-team/scripts/analyze_patterns.py --root . --output .dev-team/patterns.json
@@ -179,28 +257,61 @@ python3 dev-team/scripts/analyze_patterns.py --root . --summary  # Quick summary
 ```
 
 ### `workspace.py`
-Manages the `.dev-team/` shared workspace.
+Manages the `.dev-team/` shared workspace: initialization, context updates, ADR management, status tracking, context compression.
 
 ```bash
 python3 dev-team/scripts/workspace.py init
 python3 dev-team/scripts/workspace.py status
-python3 dev-team/scripts/workspace.py new-adr --title "Use Redis for caching"
+python3 dev-team/scripts/workspace.py compress-context   # Summarizes + archives context.md
+python3 dev-team/scripts/workspace.py new-adr --title "..."
 python3 dev-team/scripts/workspace.py list-adrs
-python3 dev-team/scripts/workspace.py update-context --key "auth" --value "JWT with refresh tokens"
+python3 dev-team/scripts/workspace.py update-context --key "..." --value "..."
+python3 dev-team/scripts/workspace.py add-task --description "..." --agent "dev-agent"
+python3 dev-team/scripts/workspace.py complete-task --task-id 3
 ```
 
 ### `orchestrator.py`
 Programmatic multi-agent pipeline via the Anthropic SDK.
 
 ```bash
-python3 dev-team/scripts/orchestrator.py --task "..." [--agents a,b,c] [--root .] [--dry-run]
+# Staged pipeline (recommended) — parallel stages, intelligent context summarization
+python3 dev-team/scripts/orchestrator.py --task "..." --staged --root .
+
+# Sequential pipeline
+python3 dev-team/scripts/orchestrator.py --task "..." --root .
+
+# Custom agent sequence
+python3 dev-team/scripts/orchestrator.py --task "..." --agents research,security,architect
+
+# Parallel (no context sharing — for independent analysis)
+python3 dev-team/scripts/orchestrator.py --task "..." --agents qa,docs --parallel
+
+# Dry run
+python3 dev-team/scripts/orchestrator.py --task "..." --dry-run
+
+# Save results to JSON
+python3 dev-team/scripts/orchestrator.py --task "..." --output results.json
 ```
+
+**Staged pipeline stages** (used with `--staged`):
+```
+Stage 1: ba                           (requirements)
+Stage 2: research ‖ security          (parallel — codebase + threat model)
+Stage 3: architect                    (design, using both stage 2 outputs)
+Stage 4: developer ‖ database         (parallel — implementation)
+Stage 5: qa ‖ docs ‖ devops           (parallel — quality + docs)
+Stage 6: reviewer                     (code review)
+Stage 7: lead                         (PR creation and merge)
+```
+
+---
 
 ## Design Principles
 
 1. **Read before writing** — every agent reads existing code before writing new code
-2. **Patterns over preferences** — match what's there, justify deviations explicitly
+2. **Patterns over preferences** — match what's there, justify deviations with an ADR
 3. **Minimal changes** — do exactly what's asked, scope creep is a bug
-4. **Frequent reporting** — status updates at every major milestone, no silent work
-5. **Blockers surface immediately** — never guess, never silently work around ambiguity
-6. **Security first** — the reviewer always checks for OWASP Top 10 before approval
+4. **Security is upstream** — threat model before design, not just checklist at review time
+5. **Frequent reporting** — status updates at every major milestone, no silent work
+6. **Blockers surface immediately** — never guess or silently work around ambiguity
+7. **Complete the lifecycle** — from GitHub issue triage to merged PR

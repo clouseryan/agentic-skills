@@ -28,7 +28,10 @@ Works in both **Claude Code** (skill commands) and **GitHub Copilot** (agent per
 | Skill | Invoke | Role |
 |-------|--------|------|
 | [Orchestrator](dev-team/SKILL.md) | `/dev-team` | Coordinates all agents, tracks tasks, reports status |
+| [Business Analyst](dev-team/ba/SKILL.md) | `/ba-agent` | Requirements gathering, domain research, specs |
+| [Issue Triage](dev-team/triage/SKILL.md) | `/triage-agent` | GitHub issue classification, routing, labeling |
 | [Research Analyst](dev-team/research/SKILL.md) | `/research-agent` | Explores codebases, discovers patterns and conventions |
+| [Security Agent](dev-team/security/SKILL.md) | `/sec-agent` | Threat modeling, CVE scanning, secrets detection |
 | [Software Architect](dev-team/architect/SKILL.md) | `/architect-agent` | Designs solutions, writes Architectural Decision Records |
 | [Developer](dev-team/developer/SKILL.md) | `/dev-agent` | Implements features following existing patterns exactly |
 | [Database Engineer](dev-team/database/SKILL.md) | `/db-agent` | Schema design, migrations, query optimization |
@@ -36,6 +39,7 @@ Works in both **Claude Code** (skill commands) and **GitHub Copilot** (agent per
 | [Code Reviewer](dev-team/reviewer/SKILL.md) | `/review-agent` | Security, performance, and pattern compliance review |
 | [Documentation Writer](dev-team/docs/SKILL.md) | `/docs-agent` | READMEs, API docs, inline comments, changelogs |
 | [DevOps Engineer](dev-team/devops/SKILL.md) | `/devops-agent` | CI/CD pipelines, containers, infrastructure-as-code |
+| [Lead Engineer](dev-team/lead/SKILL.md) | `/lead-agent` | PR creation, review, approval, and merge |
 
 **Helper scripts** (in `dev-team/scripts/`):
 - `explore_codebase.py` — directory tree, framework detection, entry point mapping

@@ -6,11 +6,12 @@ Programmatic orchestration using the Anthropic SDK. Runs multiple specialized
 agent conversations, passes context between them, and aggregates results.
 
 This script powers the /dev-team skill's ability to coordinate multiple
-Claude agents concurrently for complex tasks.
+Claude agents for complex tasks.
 
 Usage:
   python3 orchestrator.py --task "add user authentication" --root .
   python3 orchestrator.py --agents research,architect,developer --task "..."
+  python3 orchestrator.py --staged --task "..."   # fan-out/fan-in pipeline
   python3 orchestrator.py --dry-run --task "..."
 
 Requirements:
@@ -23,6 +24,7 @@ import json
 import os
 import sys
 import time
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -37,6 +39,26 @@ except ImportError:
 # ─── Agent Definitions ─────────────────────────────────────────────────────────
 
 AGENTS = {
+    'ba': {
+        'name': 'Business Analyst',
+        'emoji': '📋',
+        'system': """You are the Business Analyst on an agentic software development team.
+Your role is to deeply understand the problem being solved before any design or code is written.
+
+When given a task, you will:
+1. Frame the problem: who has it, what pain it causes, what success looks like
+2. Research the domain: industry standards, competitive approaches, UX patterns
+3. Identify what already exists in the codebase related to this problem
+4. Produce a structured requirements document (functional + non-functional + out of scope)
+5. Write a concise specification brief for the architect
+
+Key rules:
+- Requirements describe user needs, not implementation choices
+- Out of scope is as important as in scope
+- Every requirement must have an acceptance criterion
+
+Output format: Problem Statement → Domain Summary → Requirements Table → Architect Handoff Brief""",
+    },
     'research': {
         'name': 'Research Analyst',
         'emoji': '🔍',
@@ -59,7 +81,7 @@ Format your findings as structured markdown with clear sections.""",
         'system': """You are the Software Architect on an agentic software development team.
 Your role is to design implementations that fit the existing codebase.
 
-When given research findings and a task, you will:
+When given research findings, BA requirements, and a task, you will:
 1. Analyze how the request fits with existing patterns
 2. Design the minimal solution that achieves the goal
 3. Identify exactly which files to create and modify
@@ -68,6 +90,23 @@ When given research findings and a task, you will:
 
 Prefer existing patterns. Only introduce new patterns with explicit justification.
 Output a concrete implementation brief the developer can follow exactly.""",
+    },
+    'security': {
+        'name': 'Security Agent',
+        'emoji': '🔐',
+        'system': """You are the Security Agent on an agentic software development team.
+Your role is to assess security risks proactively — both before design and after implementation.
+
+When given a task or codebase to review, you will:
+1. Identify the attack surface (entry points, trust boundaries, data assets)
+2. Apply STRIDE threat modeling to key components
+3. Scan for dependency vulnerabilities (CVEs in package.json, requirements.txt, etc.)
+4. Detect patterns suggesting hardcoded secrets or credentials
+5. Flag compliance implications (GDPR, SOC2, HIPAA, PCI-DSS)
+6. Rate every finding: CRITICAL / HIGH / MEDIUM / LOW
+7. Provide specific remediation for every finding
+
+Output: threat model → dependency findings → static analysis findings → compliance flags → verdict (CLEAR / WARNINGS / REMEDIATION REQUIRED / BLOCKED)""",
     },
     'developer': {
         'name': 'Developer',
@@ -85,6 +124,34 @@ Never deviate from existing patterns without flagging it.
 Never leave TODOs unless explicitly asked.
 Report status after each file is complete.""",
     },
+    'database': {
+        'name': 'Database Engineer',
+        'emoji': '🗄️',
+        'system': """You are the Database Engineer on an agentic software development team.
+Your role is to handle all database-related changes.
+
+When given a task involving data persistence, you will:
+1. Design schema changes following existing conventions
+2. Write migration files in the project's migration format
+3. Identify index requirements based on access patterns
+4. Verify migrations are reversible (include down migrations)
+
+Always flag potentially dangerous migrations (drops, large table changes).""",
+    },
+    'qa': {
+        'name': 'QA Engineer',
+        'emoji': '🧪',
+        'system': """You are the QA Engineer on an agentic software development team.
+Your role is to write tests that verify the implemented features.
+
+When given implementation details, you will:
+1. Identify what needs to be tested (happy paths, edge cases, error cases)
+2. Write tests following the exact test patterns of the codebase
+3. Verify that tests actually run and pass
+4. Report coverage of the new code
+
+Match the project's test framework and style exactly.""",
+    },
     'reviewer': {
         'name': 'Code Reviewer',
         'emoji': '🔎',
@@ -101,20 +168,6 @@ When given code to review, you will:
 Provide specific file:line references for every finding.
 Output a verdict: APPROVED / CHANGES REQUESTED / BLOCKED.""",
     },
-    'qa': {
-        'name': 'QA Engineer',
-        'emoji': '🧪',
-        'system': """You are the QA Engineer on an agentic software development team.
-Your role is to write tests that verify the implemented features.
-
-When given implementation details, you will:
-1. Identify what needs to be tested (happy paths, edge cases, error cases)
-2. Write tests following the exact test patterns of the codebase
-3. Verify that tests actually run and pass
-4. Report coverage of the new code
-
-Match the project's test framework and style exactly.""",
-    },
     'docs': {
         'name': 'Documentation Writer',
         'emoji': '📝',
@@ -128,20 +181,6 @@ When given implementation details, you will:
 4. Ensure all usage examples are accurate and runnable
 
 Match the existing documentation style. Never document what isn't implemented.""",
-    },
-    'database': {
-        'name': 'Database Engineer',
-        'emoji': '🗄️',
-        'system': """You are the Database Engineer on an agentic software development team.
-Your role is to handle all database-related changes.
-
-When given a task involving data persistence, you will:
-1. Design schema changes following existing conventions
-2. Write migration files in the project's migration format
-3. Identify index requirements based on access patterns
-4. Verify migrations are reversible (include down migrations)
-
-Always flag potentially dangerous migrations (drops, large table changes).""",
     },
     'devops': {
         'name': 'DevOps Engineer',
@@ -157,9 +196,108 @@ When given a task with infrastructure implications, you will:
 
 Follow existing infrastructure patterns. Flag any security concerns.""",
     },
+    'triage': {
+        'name': 'Issue Triage Agent',
+        'emoji': '🎯',
+        'system': """You are the Issue Triage Agent on an agentic software development team.
+Your role is to read GitHub issues, classify them, estimate complexity, and route them to the right agents.
+
+When given an issue or set of issues, you will:
+1. Read the full issue content (title, body, comments)
+2. Classify the type: bug / feature / tech-debt / question / security / epic
+3. Estimate complexity: small / medium / large / epic
+4. Identify which dev team agents should handle the work
+5. Post a structured triage comment on the issue via gh CLI
+6. Apply appropriate labels
+
+For security issues: escalate immediately regardless of apparent severity.
+For epics: produce a breakdown into smaller issues before routing to implementation agents.
+
+Use the `gh` CLI for all GitHub operations.""",
+    },
+    'lead': {
+        'name': 'Lead Engineer',
+        'emoji': '🚀',
+        'system': """You are the Lead Engineer on an agentic software development team.
+Your role is to manage the full GitHub pull request lifecycle.
+
+When given a task, you will:
+1. Create pull requests with well-structured descriptions (summary, changes, testing checklist)
+2. Review PRs using the full security/performance/correctness/pattern checklist
+3. Post structured inline comments with severity ratings and specific fix suggestions
+4. Approve PRs when no blockers are found
+5. Request changes with a clear list of required fixes
+6. Merge approved PRs (prefer squash merge to keep history clean)
+
+Use `gh pr create`, `gh pr review`, and `gh pr merge` for all GitHub operations.
+Nothing merges without passing CI and a clean review. CRITICAL findings always block.""",
+    },
 }
 
-DEFAULT_PIPELINE = ['research', 'architect', 'developer', 'reviewer', 'qa', 'docs']
+# ─── Pipeline Definitions ──────────────────────────────────────────────────────
+
+# Simple sequential pipeline (default for --agents flag)
+DEFAULT_PIPELINE = ['ba', 'research', 'architect', 'developer', 'reviewer', 'qa', 'docs']
+
+# Staged pipeline with fan-out/fan-in (used with --staged flag)
+# Each stage is a list of agents that run in parallel within that stage.
+# Agents in later stages receive the combined output of all prior stages.
+STAGED_PIPELINE = [
+    ['ba'],                          # Stage 1: Requirements
+    ['research', 'security'],        # Stage 2: Research + threat model (parallel)
+    ['architect'],                   # Stage 3: Architecture (needs both stage 2 outputs)
+    ['developer', 'database'],       # Stage 4: Implementation (parallel where applicable)
+    ['qa', 'docs', 'devops'],        # Stage 5: Quality + docs (parallel)
+    ['reviewer'],                    # Stage 6: Code review (needs all stage 5 outputs)
+    ['lead'],                        # Stage 7: PR creation and merge
+]
+
+
+# ─── Context Management ────────────────────────────────────────────────────────
+
+def summarize_agent_output(client, model: str, agent_name: str, output: str) -> str:
+    """
+    Produce a concise summary of an agent's output for passing to downstream agents.
+    Falls back to truncation if the API call fails.
+    """
+    if len(output) <= 3000:
+        return output
+
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=1000,
+            system="You are a technical summarizer. Extract the most important findings, decisions, and action items from agent output. Be concise but preserve all critical technical details, file paths, and specific recommendations.",
+            messages=[{
+                'role': 'user',
+                'content': f"Summarize this {agent_name} output, preserving all critical technical details:\n\n{output[:8000]}"
+            }],
+        )
+        return f"[SUMMARY of {agent_name} output]\n{response.content[0].text}"
+    except Exception:
+        # Fallback: smart truncation keeping first and last portions
+        half = 1400
+        return (
+            f"[TRUNCATED {agent_name} output — {len(output)} chars total]\n"
+            f"{output[:half]}\n\n... [middle omitted] ...\n\n{output[-half:]}"
+        )
+
+
+def build_context_block(context: dict, client, model: str, summarize: bool = True) -> str:
+    """Build the prior-agent-outputs block to inject into the next agent's prompt."""
+    if not context:
+        return ''
+
+    parts = ['\n\n---\n## Prior Agent Outputs\n']
+    for agent_key, output in context.items():
+        agent_name = AGENTS.get(agent_key, {}).get('name', agent_key)
+        if summarize and client and len(output) > 3000:
+            summary = summarize_agent_output(client, model, agent_name, output)
+            parts.append(f'\n### {agent_name} Output:\n{summary}\n')
+        else:
+            parts.append(f'\n### {agent_name} Output:\n{output[:4000]}\n')
+
+    return ''.join(parts)
 
 
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
@@ -169,8 +307,8 @@ class DevTeamOrchestrator:
         self.client = anthropic.Anthropic() if not dry_run else None
         self.model = model
         self.dry_run = dry_run
-        self.context = {}
-        self.results = {}
+        self.context: dict[str, str] = {}  # agent_key → full output
+        self.results: dict[str, str] = {}
         self.start_time = datetime.now()
 
     def status(self, phase: str, agent: str, detail: str = ''):
@@ -188,24 +326,24 @@ class DevTeamOrchestrator:
 
     def run_agent(self, agent_key: str, task: str, context_override: str = '') -> str:
         """Run a single agent with the given task and accumulated context."""
+        if agent_key not in AGENTS:
+            raise ValueError(f"Unknown agent: '{agent_key}'. Available: {', '.join(AGENTS.keys())}")
+
         agent = AGENTS[agent_key]
-        self.status('running', agent_key, f'Processing task...')
+        self.status('running', agent_key, 'Processing task...')
 
         if self.dry_run:
             result = f"[DRY RUN] {agent['name']} would process: {task[:100]}..."
             print(result)
             return result
 
-        # Build the user message with context
-        context_str = ''
-        if self.context:
-            context_str = '\n\n---\n## Prior Agent Outputs\n'
-            for key, value in self.context.items():
-                context_str += f'\n### {AGENTS.get(key, {}).get("name", key)} Output:\n{value[:2000]}\n'
+        context_str = context_override or build_context_block(
+            self.context, self.client, self.model, summarize=True
+        )
 
         user_message = f"""Task: {task}
 
-{context_override or context_str}
+{context_str}
 
 Please proceed with your analysis and output. Report status as you work."""
 
@@ -218,11 +356,7 @@ Please proceed with your analysis and output. Report status as you work."""
             )
             result = response.content[0].text
             self.results[agent_key] = result
-
-            # Store in context for next agents
             self.context[agent_key] = result
-
-            # Print result
             print(f"\n{result}")
             return result
 
@@ -237,11 +371,11 @@ Please proceed with your analysis and output. Report status as you work."""
         agents: list[str] | None = None,
         project_root: str = '.',
     ) -> dict:
-        """Run the full agent pipeline."""
+        """Run a sequential agent pipeline."""
         pipeline = agents or DEFAULT_PIPELINE
 
         print(f"\n{'═' * 60}")
-        print(f"DEV TEAM ORCHESTRATOR")
+        print(f"DEV TEAM ORCHESTRATOR — Sequential Pipeline")
         print(f"{'═' * 60}")
         print(f"Task:    {task}")
         print(f"Agents:  {' → '.join(pipeline)}")
@@ -249,43 +383,128 @@ Please proceed with your analysis and output. Report status as you work."""
         print(f"Root:    {project_root}")
         print(f"{'═' * 60}")
 
-        # Load workspace context if available
-        workspace = Path(project_root) / '.dev-team'
-        workspace_context = ''
-        if workspace.exists():
-            context_file = workspace / 'context.md'
-            if context_file.exists():
-                workspace_context = f"\n\n## Project Context\n{context_file.read_text()[:3000]}"
-            patterns_file = workspace / 'patterns.json'
-            if patterns_file.exists():
-                try:
-                    patterns = json.loads(patterns_file.read_text())
-                    summary = patterns.get('summary', [])
-                    if summary:
-                        workspace_context += '\n\n## Known Patterns\n' + '\n'.join(f'- {p}' for p in summary)
-                except Exception:
-                    pass
+        enriched_task = self._enrich_task(task, project_root)
 
-        # Enrich task with workspace context
-        enriched_task = f"{task}{workspace_context}"
-
-        # Run pipeline sequentially
         for agent_key in pipeline:
             if agent_key not in AGENTS:
                 print(f"WARNING: Unknown agent '{agent_key}', skipping", file=sys.stderr)
                 continue
+            self.run_agent(agent_key, enriched_task)
+            time.sleep(0.5)
 
-            result = self.run_agent(agent_key, enriched_task)
-            time.sleep(0.5)  # Small delay between agents
+        self._print_completion_summary()
+        return self.results
 
-        # Final summary
+    def run_staged_pipeline(
+        self,
+        task: str,
+        stages: list[list[str]] | None = None,
+        project_root: str = '.',
+    ) -> dict:
+        """
+        Run a staged pipeline with fan-out/fan-in.
+        Within each stage, agents run in parallel. Stages run sequentially,
+        with each stage receiving the accumulated context from all prior stages.
+        """
+        pipeline = stages or STAGED_PIPELINE
+
         print(f"\n{'═' * 60}")
-        print(f"DEV TEAM PIPELINE COMPLETE")
-        print(f"Elapsed: {(datetime.now() - self.start_time).seconds}s")
-        print(f"Agents run: {', '.join(self.results.keys())}")
+        print(f"DEV TEAM ORCHESTRATOR — Staged Pipeline (fan-out/fan-in)")
+        print(f"{'═' * 60}")
+        print(f"Task:    {task}")
+        for i, stage in enumerate(pipeline, 1):
+            print(f"Stage {i}: {' ‖ '.join(stage)}")
+        print(f"Model:   {self.model}")
+        print(f"Root:    {project_root}")
         print(f"{'═' * 60}")
 
+        enriched_task = self._enrich_task(task, project_root)
+
+        for stage_num, stage_agents in enumerate(pipeline, 1):
+            # Filter out unknown agents
+            valid_agents = [a for a in stage_agents if a in AGENTS]
+            unknown = [a for a in stage_agents if a not in AGENTS]
+            if unknown:
+                print(f"WARNING: Skipping unknown agents in stage {stage_num}: {unknown}", file=sys.stderr)
+            if not valid_agents:
+                continue
+
+            print(f"\n{'─' * 60}")
+            print(f"STAGE {stage_num}: {' ‖ '.join(AGENTS[a]['name'] for a in valid_agents)}")
+            print(f"{'─' * 60}")
+
+            if len(valid_agents) == 1:
+                # Single agent — run directly
+                self.run_agent(valid_agents[0], enriched_task)
+            else:
+                # Multiple agents — run in parallel, then merge results into context
+                self._run_stage_parallel(valid_agents, enriched_task)
+
+            time.sleep(0.3)
+
+        self._print_completion_summary()
         return self.results
+
+    def _run_stage_parallel(self, agent_keys: list[str], task: str) -> None:
+        """Run a set of agents in parallel, all sharing the current context snapshot."""
+        # Snapshot context before the stage (all parallel agents see the same prior context)
+        context_snapshot = build_context_block(
+            self.context, self.client, self.model, summarize=True
+        )
+
+        stage_results: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        lock = threading.Lock()
+
+        def run_one(agent_key: str):
+            agent = AGENTS[agent_key]
+            self.status('running (parallel)', agent_key, 'Processing in parallel...')
+
+            if self.dry_run:
+                result = f"[DRY RUN] {agent['name']} would process task..."
+                print(result)
+                with lock:
+                    stage_results[agent_key] = result
+                return
+
+            user_message = f"""Task: {task}
+
+{context_snapshot}
+
+Please proceed with your analysis and output. Report status as you work."""
+
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=4096,
+                    system=agent['system'],
+                    messages=[{'role': 'user', 'content': user_message}],
+                )
+                result = response.content[0].text
+                print(f"\n{result}")
+                with lock:
+                    stage_results[agent_key] = result
+            except Exception as e:
+                error = f"Agent {agent_key} failed: {str(e)}"
+                print(f"ERROR: {error}", file=sys.stderr)
+                with lock:
+                    errors[agent_key] = error
+                    stage_results[agent_key] = error
+
+        threads = [threading.Thread(target=run_one, args=(k,)) for k in agent_keys]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Merge all stage results into shared context and results
+        for key, result in stage_results.items():
+            self.results[key] = result
+            self.context[key] = result
+
+        if errors:
+            for key, err in errors.items():
+                print(f"Stage error in {key}: {err}", file=sys.stderr)
 
     def run_parallel(
         self,
@@ -293,66 +512,119 @@ Please proceed with your analysis and output. Report status as you work."""
         parallel_agents: list[str],
         project_root: str = '.',
     ) -> dict:
-        """Run multiple agents concurrently (requires Python 3.12+ or threading)."""
-        import threading
+        """Run multiple agents concurrently with no shared context (independent analysis)."""
+        print(f"\n{'═' * 60}")
+        print(f"DEV TEAM ORCHESTRATOR — Parallel (no context sharing)")
+        print(f"{'═' * 60}")
 
-        results = {}
-        errors = {}
+        enriched_task = self._enrich_task(task, project_root)
+        self._run_stage_parallel(parallel_agents, enriched_task)
 
-        def run_agent_thread(agent_key):
-            try:
-                results[agent_key] = self.run_agent(agent_key, task)
-            except Exception as e:
-                errors[agent_key] = str(e)
+        self._print_completion_summary()
+        return self.results
 
-        threads = []
-        for agent_key in parallel_agents:
-            t = threading.Thread(target=run_agent_thread, args=(agent_key,))
-            threads.append(t)
-            t.start()
+    def _enrich_task(self, task: str, project_root: str) -> str:
+        """Load workspace context and prepend it to the task description."""
+        workspace = Path(project_root) / '.dev-team'
+        workspace_context = ''
 
-        for t in threads:
-            t.join()
+        if workspace.exists():
+            context_file = workspace / 'context.md'
+            if context_file.exists():
+                workspace_context += f"\n\n## Project Context\n{context_file.read_text()[:4000]}"
 
-        if errors:
-            for key, err in errors.items():
-                print(f"ERROR in {key}: {err}", file=sys.stderr)
+            patterns_file = workspace / 'patterns.json'
+            if patterns_file.exists():
+                try:
+                    patterns = json.loads(patterns_file.read_text())
+                    summary = patterns.get('summary', [])
+                    if summary:
+                        workspace_context += '\n\n## Known Patterns\n' + '\n'.join(f'- {p}' for p in summary[:20])
+                except Exception:
+                    pass
 
-        return results
+            requirements_dir = workspace / 'requirements'
+            if requirements_dir.exists():
+                req_files = sorted(requirements_dir.glob('*.md'))
+                if req_files:
+                    workspace_context += '\n\n## Prior Requirements Documents\n'
+                    for f in req_files[:3]:
+                        workspace_context += f'\n### {f.name}\n{f.read_text()[:1000]}\n'
+
+        return f"{task}{workspace_context}"
+
+    def _print_completion_summary(self):
+        elapsed = (datetime.now() - self.start_time).seconds
+        print(f"\n{'═' * 60}")
+        print(f"DEV TEAM PIPELINE COMPLETE")
+        print(f"Elapsed: {elapsed}s")
+        print(f"Agents run: {', '.join(self.results.keys())}")
+        print(f"{'═' * 60}")
 
 
 # ─── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
+    available_agents = ', '.join(AGENTS.keys())
     parser = argparse.ArgumentParser(
-        description='Dev Team Orchestrator — coordinate multiple Claude agents'
+        description='Dev Team Orchestrator — coordinate multiple Claude agents',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Available agents: {available_agents}
+
+Pipeline modes:
+  (default)   Sequential pipeline: ba → research → architect → developer → reviewer → qa → docs
+  --staged    Staged fan-out/fan-in pipeline with parallel stages (recommended for full runs)
+  --parallel  All specified agents run in parallel with no context sharing
+  --agents    Custom sequential pipeline (comma-separated agent names)
+
+Examples:
+  %(prog)s --task "add user auth" --root .
+  %(prog)s --task "add user auth" --staged
+  %(prog)s --task "analyze payment module" --agents research,security,architect
+  %(prog)s --task "..." --dry-run
+        """
     )
     parser.add_argument('--task', required=True, help='The task or goal to accomplish')
     parser.add_argument('--root', default='.', help='Project root directory')
     parser.add_argument(
         '--agents',
-        help=f'Comma-separated agent pipeline (default: {",".join(DEFAULT_PIPELINE)})\nAvailable: {", ".join(AGENTS.keys())}',
+        help=f'Comma-separated agent pipeline. Available: {available_agents}',
+    )
+    parser.add_argument(
+        '--staged',
+        action='store_true',
+        help='Use the staged fan-out/fan-in pipeline (parallel within stages)',
+    )
+    parser.add_argument(
+        '--parallel',
+        action='store_true',
+        help='Run agents in parallel with no context sharing (requires --agents)',
     )
     parser.add_argument('--model', default='claude-sonnet-4-6', help='Claude model to use')
     parser.add_argument('--dry-run', action='store_true', help='Print plan without calling API')
-    parser.add_argument('--parallel', action='store_true', help='Run agents in parallel (no context sharing)')
     parser.add_argument('--output', help='Save results to JSON file')
     args = parser.parse_args()
 
-    # Validate API key
     if not args.dry_run and not os.environ.get('ANTHROPIC_API_KEY'):
         print("Error: ANTHROPIC_API_KEY environment variable not set")
         print("Set it with: export ANTHROPIC_API_KEY=your-key")
         sys.exit(1)
 
-    agents = args.agents.split(',') if args.agents else None
+    if args.parallel and not args.agents:
+        print("Error: --parallel requires --agents to specify which agents to run")
+        sys.exit(1)
+
+    agent_list = [a.strip() for a in args.agents.split(',')] if args.agents else None
 
     orchestrator = DevTeamOrchestrator(model=args.model, dry_run=args.dry_run)
 
-    if args.parallel and agents:
-        results = orchestrator.run_parallel(args.task, agents, args.root)
+    if args.parallel and agent_list:
+        results = orchestrator.run_parallel(args.task, agent_list, args.root)
+    elif args.staged:
+        results = orchestrator.run_staged_pipeline(args.task, project_root=args.root)
     else:
-        results = orchestrator.run_pipeline(args.task, agents, args.root)
+        results = orchestrator.run_pipeline(args.task, agent_list, args.root)
 
     if args.output:
         output_data = {
@@ -362,7 +634,7 @@ def main():
             'results': results,
         }
         Path(args.output).write_text(json.dumps(output_data, indent=2))
-        print(f"\n✓ Results saved to {args.output}")
+        print(f"\nResults saved to {args.output}")
 
 
 if __name__ == '__main__':
