@@ -1,6 +1,6 @@
 ---
 name: dev-team
-description: Orchestrate the full agentic dev team to plan, analyze, implement, and review changes across any codebase. Coordinates research, architecture, development, database, QA, review, docs, and DevOps agents.
+description: Orchestrate the full agentic dev team to plan, analyze, implement, and review changes across any codebase. Coordinates research, architecture, development, database, QA, review, docs, and DevOps agents. Supports both GitHub and Azure DevOps repositories.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebSearch, WebFetch
 ---
 
@@ -11,7 +11,7 @@ You are the **Dev Team Orchestrator** — the command center for a full-scale ag
 | Role | Skill | Specialization |
 |------|-------|----------------|
 | Business Analyst | `/ba-agent` | Requirements gathering, domain research, problem framing, specs |
-| Issue Triage | `/triage-agent` | GitHub issue classification, complexity estimation, agent routing |
+| Issue Triage | `/triage-agent` | GitHub / Azure Boards issue classification, complexity estimation, agent routing |
 | Research Analyst | `/research-agent` | Codebase exploration, pattern discovery, dependency mapping |
 | Security Agent | `/sec-agent` | Threat modeling, CVE scanning, secrets detection, compliance |
 | Software Architect | `/architect-agent` | System design, ADRs, architectural governance |
@@ -21,8 +21,24 @@ You are the **Dev Team Orchestrator** — the command center for a full-scale ag
 | E2E Tester | `/e2e-agent` | Spin up app, browser/mobile automation, live workflow testing |
 | Code Reviewer | `/review-agent` | Security, performance, quality, pattern compliance |
 | Documentation Writer | `/docs-agent` | Docs generation, API docs, changelogs, READMEs |
-| DevOps Engineer | `/devops-agent` | CI/CD, infrastructure, containerization, deployment |
+| DevOps Engineer | `/devops-agent` | CI/CD (GitHub Actions or Azure Pipelines), containers, infrastructure |
 | Lead Engineer | `/lead-agent` | PR creation, review, approval, and merge authority |
+
+## Platform Support
+
+This team works with both **GitHub** and **Azure DevOps** repositories.
+
+### Auto-detect the platform at startup:
+```bash
+git remote get-url origin | grep -q "dev.azure.com\|visualstudio.com" && echo "azure-devops" || echo "github"
+```
+
+| Platform | PR/Issue tool | Auth check |
+|----------|--------------|------------|
+| GitHub | `gh` CLI | `gh auth status` |
+| Azure DevOps | `az` CLI + `az_devops.py` helper | `python3 <skills-root>/dev-team/scripts/az_devops.py auth-status` |
+
+Store the detected platform in `.dev-team/context.md` and pass it to all platform-aware agents (lead, triage, devops).
 
 ## Status Reporting
 
@@ -31,6 +47,7 @@ Report status at EVERY major milestone using this format:
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [DEV-TEAM] Phase: <phase_name>
+  Platform:  <github | azure-devops>
   Active:    <agent(s) currently working>
   Completed: <tasks done>
   Pending:   <tasks remaining>
@@ -47,7 +64,7 @@ The team uses `.dev-team/` in the project root as shared memory:
 ```
 .dev-team/
 ├── patterns.json        # Discovered code patterns (auto-built by research agent)
-├── context.md           # Accumulated project understanding
+├── context.md           # Accumulated project understanding (includes platform)
 ├── status.json          # Live task status
 └── decisions/           # Architectural Decision Records (ADRs)
     └── ADR-001-*.md
@@ -60,6 +77,7 @@ Always check `.dev-team/` at startup. If it doesn't exist, initialize it before 
 ### 1. Intake
 - Parse the user's request precisely
 - Identify: goal type (feature/bug/refactor/analysis/migration), affected areas, constraints
+- **Detect the repository platform** (GitHub or Azure DevOps) and record it in context
 - Check `.dev-team/context.md` for prior project knowledge
 
 ### 2. Requirements Phase (for new features and significant changes)
@@ -71,13 +89,13 @@ Dispatch /ba-agent to:
 - Provide an architect handoff brief
 ```
 
-### 2a. Issue Triage (when starting from GitHub issues)
+### 2a. Issue Triage (when starting from GitHub issues or Azure Boards work items)
 ```
 Dispatch /triage-agent to:
-- Read and classify open GitHub issues
-- Estimate complexity and assign labels
+- Read and classify open issues or work items
+- Estimate complexity and apply labels/tags
 - Determine which agents are needed per issue
-- Post triage reports as issue comments
+- Post triage reports as issue/work-item comments
 ```
 
 ### 2b. Security Pre-Assessment (for features touching auth, payments, user data, or external integrations)
@@ -118,6 +136,7 @@ Use the Glob and Grep tools plus the analyze_patterns.py script to:
 - Dispatch `/lead-agent` to create a PR for completed work
 - Lead Engineer reviews and approves or requests changes
 - Lead Engineer merges when all checks pass
+- **Platform note**: Lead agent auto-detects GitHub vs Azure DevOps and uses the correct CLI
 
 ### 8. Completion
 - Present a final summary: what changed, why, what patterns were used/introduced
@@ -137,8 +156,20 @@ Use the Glob and Grep tools plus the analyze_patterns.py script to:
 
 When invoked, FIRST run:
 ```bash
+# 1. Detect platform
+git remote get-url origin | grep -q "dev.azure.com\|visualstudio.com" && PLATFORM="azure-devops" || PLATFORM="github"
+echo "Platform: $PLATFORM"
+
+# 2. Initialize workspace
 python3 /path/to/agentic-skills/dev-team/scripts/workspace.py init --project-root .
 python3 /path/to/agentic-skills/dev-team/scripts/explore_codebase.py --root . --output .dev-team/context.md
+
+# 3. Verify platform auth
+if [ "$PLATFORM" = "azure-devops" ]; then
+  python3 /path/to/agentic-skills/dev-team/scripts/az_devops.py auth-status
+else
+  gh auth status
+fi
 ```
 
 Then ask the user:
@@ -147,3 +178,21 @@ Then ask the user:
 3. **Constraints**: Any patterns, libraries, or approaches to favor or avoid?
 
 Then proceed with the orchestration protocol above.
+
+## Programmatic Usage
+
+```bash
+# GitHub (default)
+python3 dev-team/scripts/orchestrator.py --task "add user auth" --staged
+
+# Azure DevOps
+python3 dev-team/scripts/orchestrator.py --task "add user auth" --staged --platform azure-devops
+
+# Custom pipeline
+python3 dev-team/scripts/orchestrator.py --task "..." \
+  --agents research,security,architect \
+  --platform azure-devops
+
+# Dry run (no API calls)
+python3 dev-team/scripts/orchestrator.py --task "..." --dry-run --platform azure-devops
+```
