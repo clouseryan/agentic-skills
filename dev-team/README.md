@@ -9,7 +9,7 @@ A full-scale agentic development team for rapid, pattern-aware changes to any co
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (for skill commands) or [GitHub Copilot](https://github.com/features/copilot) (for agent personas)
 - Python 3.10+ (for helper scripts)
 - `pip install anthropic` (for `orchestrator.py` and `workspace.py compress-context`)
-- `gh` CLI authenticated (`gh auth login`) for `/lead-agent` and `/triage-agent`
+- `gh` CLI authenticated (`gh auth login`) for `/lead-agent`
 
 ### 1. Install the Skills
 
@@ -67,7 +67,6 @@ This creates:
 
 # Or invoke individual agents directly
 /ba-agent gather requirements for a notifications feature
-/triage-agent triage all open GitHub issues
 /research-agent how is error handling done in this codebase?
 /sec-agent threat model the new payment feature
 /architect-agent design a caching layer for the API
@@ -123,7 +122,6 @@ python3 dev-team/scripts/orchestrator.py \
 |-------|--------------|------|
 | Orchestrator | `/dev-team` | Coordinates the whole team, tracks progress |
 | Business Analyst | `/ba-agent` | Requirements gathering, domain research, specs |
-| Issue Triage | `/triage-agent` | GitHub issue classification, complexity, routing |
 | Research Analyst | `/research-agent` | Explores codebases, discovers patterns |
 | Security Agent | `/sec-agent` | Threat modeling, CVE scanning, secrets detection |
 | Software Architect | `/architect-agent` | Designs solutions, writes ADRs |
@@ -144,8 +142,6 @@ python3 dev-team/scripts/orchestrator.py \
 
 ```
 GitHub Issue
-     ↓
-Triage Agent → classifies issue, posts routing plan, applies labels
      ↓
 Business Analyst → frames problem, researches domain, writes requirements doc
      ↓                              ↓
@@ -168,8 +164,6 @@ Research Analyst              Security Agent
 ```
 GitHub Issue (bug)
      ↓
-Triage Agent → classifies as bug/small-medium, routes
-     ↓
 Research Analyst → finds root cause and related code
      ↓
 Developer → implements fix following existing patterns
@@ -183,8 +177,6 @@ Lead Engineer → PR + merge
 
 ```
 GitHub Issue (security)
-     ↓
-Triage Agent → escalates immediately, flags if needs private handling
      ↓
 Security Agent → assesses severity, produces STRIDE analysis
      ↓
@@ -316,4 +308,4 @@ Stage 7: lead                         (PR creation and merge)
 4. **Security is upstream** — threat model before design, not just checklist at review time
 5. **Frequent reporting** — status updates at every major milestone, no silent work
 6. **Blockers surface immediately** — never guess or silently work around ambiguity
-7. **Complete the lifecycle** — from GitHub issue triage to merged PR
+7. **Complete the lifecycle** — from requirements to merged PR

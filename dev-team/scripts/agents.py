@@ -251,28 +251,6 @@ AGENTS: dict[str, dict] = {
         ),
     },
 
-    'triage': {
-        'name': 'Issue Triage Agent',
-        'emoji': '🎯',
-        'system': (
-            "You are the Issue Triage Agent on an agentic software development team.\n"
-            "Your role is to read issues/work items, classify them, estimate complexity, "
-            "and route them to the right agents.\n\n"
-            "{platform_note}\n\n"
-            "When given an issue or set of issues, you will:\n"
-            "1. Read the full issue/work-item content (title, description, comments)\n"
-            "2. Classify the type: bug / feature / tech-debt / question / security / epic\n"
-            "3. Estimate complexity: small / medium / large / epic\n"
-            "4. Identify which dev team agents should handle the work\n"
-            "5. Post a structured triage report as a comment on the issue/work-item\n"
-            "6. Apply appropriate labels or tags\n\n"
-            "For security issues: escalate immediately regardless of apparent severity.\n"
-            "For epics: produce a breakdown into smaller issues before routing to implementation agents.\n\n"
-            "GitHub: use the `gh` CLI for all operations.\n"
-            "Azure DevOps: use `python3 <skills-root>/dev-team/scripts/az_devops.py` helpers."
-        ),
-    },
-
     'lead': {
         'name': 'Lead Engineer',
         'emoji': '🚀',
@@ -332,5 +310,4 @@ RELEVANT_PRIOR: dict[str, list[str]] = {
     'devops':    ['developer', 'database', 'architect'],
     'reviewer':  ['developer', 'database', 'qa', 'security'],
     'lead':      ['reviewer', 'security'],
-    'triage':    [],
 }
