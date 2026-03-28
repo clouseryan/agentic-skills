@@ -65,8 +65,11 @@ The team uses `.dev-team/` in the project root as shared memory:
 ├── patterns.json        # Discovered code patterns (auto-built by research agent)
 ├── context.md           # Accumulated project understanding (includes platform)
 ├── status.json          # Live task status
-└── decisions/           # Architectural Decision Records (ADRs)
-    └── ADR-001-*.md
+├── chunks.md            # Architect's chunked work plan
+├── chunks-status.json   # Chunk execution tracking (progress, rework counts)
+├── decisions/           # Architectural Decision Records (ADRs)
+│   └── ADR-001-*.md
+└── requirements/        # BA-produced feature requirements
 ```
 
 Always check `.dev-team/` at startup. If it doesn't exist, initialize it before dispatching agents.
@@ -115,27 +118,135 @@ Dispatch /sec-agent to:
 - Document decisions in `.dev-team/decisions/`
 - Flag if new patterns are needed (requires justification)
 
-### Phase 6 — Execution (ALWAYS for implementation tasks)
-- Break work into parallelizable tasks
-- Assign tasks with explicit context (file paths, patterns to follow, constraints)
-- Update TodoWrite as each task is completed
-- Report progress every 2-3 subtasks completed
+### Phase 6 — Iterative Chunk Execution (ALWAYS for implementation tasks)
 
-### Phase 7 — Quality (ALWAYS for implementation tasks)
-- Route all changes through code review (`/review-agent`) — **not optional**
-- Verify test coverage with `/qa-agent` — **not optional**
-- Validate documentation is updated
+The architect has produced an ordered list of implementation chunks in `.dev-team/chunks.md`. Execute each chunk through a dev → test → review cycle with a rework sub-loop.
 
-### Phase 8 — PR (ALWAYS for implementation tasks)
-- Dispatch `/lead-agent` to create a PR for completed work
-- Lead Engineer reviews and approves or requests changes
-- Lead Engineer merges when all checks pass
-- **Platform note**: Lead agent auto-detects GitHub vs Azure DevOps and uses the correct CLI
+**Initialize chunk tracking:**
+```bash
+# Create chunks-status.json to track progress
+cat > .dev-team/chunks-status.json << 'EOF'
+{
+  "total": <N>,
+  "completed": 0,
+  "current": "CHUNK-001",
+  "chunks": []
+}
+EOF
+```
+
+**For each chunk in the work plan, execute this cycle:**
+
+```
+CHUNK CYCLE for CHUNK-<NNN>:
+
+  Step 6a — Implement:
+    Dispatch /dev-agent with:
+      - The chunk specification from .dev-team/chunks.md
+      - Patterns to follow from .dev-team/patterns.json
+      - Context from prior completed chunks
+      - Any rework feedback (if this is a rework cycle)
+
+  Step 6b — Unit/Integration Tests:
+    Dispatch /qa-agent to:
+      - Write tests for THIS chunk only
+      - Run tests and verify they pass
+      - Report coverage for the chunk
+
+  Step 6c — Browser Testing (ONLY if chunk is UI-visible):
+    Dispatch /e2e-agent to:
+      - Start the app or connect to the running instance via MCP
+      - Test the specific UI workflow affected by this chunk
+      - Report pass/fail with screenshot evidence
+
+  Step 6d — Code Review:
+    Dispatch /review-agent to review THIS chunk's changes only
+
+  Step 6e — Rework Loop (if review requests changes):
+    IF review verdict is CHANGES REQUESTED or BLOCKED:
+      INCREMENT rework_count
+      IF rework_count > 2:
+        ⚠️  ESCALATE to user:
+        "Chunk CHUNK-<NNN> has failed review <N> times. Escalating for guidance."
+        PAUSE and wait for user input.
+      ELSE:
+        Route the reviewer's REWORK BRIEF back to /dev-agent
+        GOTO Step 6a (dev-agent receives rework instructions)
+
+  Step 6f — Commit the chunk:
+    git add <chunk files>
+    git commit -m "chunk: CHUNK-<NNN> — <chunk description>"
+
+  Update .dev-team/chunks-status.json:
+    Mark chunk as "completed", increment completed count
+
+  Report progress:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    [DEV-TEAM] Chunk CHUNK-<NNN> Complete (<N>/<total>)
+      Status:    ✓ Implemented, tested, reviewed
+      Reworks:   <N> cycles
+      Next:      CHUNK-<NNN+1> or "All chunks complete"
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Phase 7 — Final Integration (ALWAYS for implementation tasks)
+
+After ALL chunks are complete, run a final integration pass:
+
+1. **Full test suite**: Run all tests (not just chunk tests) to catch cross-chunk regressions
+2. **Full E2E validation**: Dispatch `/e2e-agent` to test all critical user workflows end-to-end via browser
+3. **Comprehensive review**: Dispatch `/review-agent` to review the combined diff (`git diff origin/main..HEAD`)
+4. **Documentation**: Dispatch `/docs-agent` to update any affected documentation
+
+If integration issues are found, create a new rework cycle targeting the specific files/chunks affected.
+
+### Phase 8 — PR (MANDATORY — always, no exceptions)
+
+**The Lead Engineer MUST ALWAYS create a PR. This phase is NEVER skipped for implementation tasks.**
+
+```
+PR CREATION AND REVIEW CYCLE:
+
+  Step 8a — Create PR:
+    Dispatch /lead-agent to create a PR for all committed work
+    The PR must include: summary, changes list, testing evidence, ADR references
+
+  Step 8b — Final Review:
+    Lead performs a final review of the complete PR diff
+
+  Step 8c — Feedback Loop (if changes needed):
+    IF lead requests changes:
+      INCREMENT pr_rework_count
+      IF pr_rework_count > 3:
+        ⚠️  ESCALATE to user:
+        "PR has failed lead review <N> times. Escalating for guidance."
+        PAUSE and wait for user input.
+      ELSE:
+        Route lead's CHANGE REQUEST to /dev-agent as rework instructions
+        Developer commits fixes
+        Lead re-reviews the delta (git diff <last-reviewed-commit>..HEAD)
+        GOTO Step 8b
+
+  Step 8d — Merge:
+    When lead approves, merge using the appropriate strategy (default: squash)
+```
 
 ### Phase 9 — Completion (ALWAYS)
 - Present a final summary: what changed, why, what patterns were used/introduced
 - Update `.dev-team/context.md` with new learnings
 - Mark all TodoWrite tasks complete
+
+## Feedback Loop Protocol
+
+When a reviewer or lead requests changes, the orchestrator routes structured findings back to the developer:
+
+1. **Reviewer → Developer**: The reviewer produces a REWORK BRIEF with numbered findings (`FIX-001`, `FIX-002`, etc.), each with file:line, issue description, and exact fix instruction. The orchestrator passes this to `/dev-agent` as rework context.
+
+2. **Lead → Developer**: The lead produces a CHANGE REQUEST with the same format. The orchestrator routes it to `/dev-agent`, who commits fixes, then the lead re-reviews only the delta.
+
+3. **Escalation**: If rework cycles exceed limits (2 per chunk, 3 per PR), the orchestrator pauses and asks the user for guidance rather than looping indefinitely.
+
+4. **Context preservation**: Each rework dispatch includes the original chunk specification AND the specific findings to fix, so the developer has full context.
 
 ## Decision Rules
 

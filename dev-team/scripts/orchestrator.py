@@ -46,6 +46,7 @@ from agents import (
     AGENTS,
     DEFAULT_PIPELINE,
     STAGED_PIPELINE,
+    CHUNK_LOOP_AGENTS,
     RELEVANT_PRIOR,
     get_platform_note,
 )
@@ -415,6 +416,140 @@ class DevTeamOrchestrator:
         self._print_completion_summary()
         return self.results
 
+    # ── Chunk-based execution loop ────────────────────────────────────────────
+
+    def run_chunk_pipeline(
+        self,
+        task: str,
+        chunks: list[dict],
+        project_root: str = '.',
+        max_reworks_per_chunk: int = 2,
+    ) -> dict:
+        """
+        Execute the iterative chunk loop: for each chunk, run
+        developer → qa → e2e (if UI-visible) → reviewer, with a rework sub-loop.
+
+        Each chunk dict should have:
+          - id: str (e.g., "CHUNK-001")
+          - description: str
+          - files: list[str] (files to create/modify)
+          - ui_visible: bool (whether to run E2E browser testing)
+          - acceptance: list[str] (acceptance criteria)
+        """
+        total = len(chunks)
+        chunk_results: dict[str, dict] = {}
+
+        print(f"\n{'═' * 60}")
+        print(f"DEV TEAM — Chunk Execution Loop ({total} chunks)")
+        print(f"{'═' * 60}")
+
+        workspace_dir = self._workspace_dir(project_root)
+        self._store = _load_store(workspace_dir)
+
+        # Write initial chunk status
+        status_file = workspace_dir / 'chunks-status.json'
+        chunk_status = {
+            'total': total,
+            'completed': 0,
+            'current': chunks[0].get('id', 'CHUNK-001') if chunks else None,
+            'chunks': [
+                {'id': c.get('id', f'CHUNK-{i+1:03d}'), 'status': 'pending', 'rework_count': 0}
+                for i, c in enumerate(chunks)
+            ],
+        }
+        status_file.write_text(json.dumps(chunk_status, indent=2))
+
+        for i, chunk in enumerate(chunks):
+            chunk_id = chunk.get('id', f'CHUNK-{i+1:03d}')
+            description = chunk.get('description', '')
+            ui_visible = chunk.get('ui_visible', False)
+
+            print(f"\n{'─' * 60}")
+            print(f"CHUNK {i+1}/{total}: {chunk_id} — {description}")
+            print(f"{'─' * 60}")
+
+            # Update status
+            chunk_status['current'] = chunk_id
+            for cs in chunk_status['chunks']:
+                if cs['id'] == chunk_id:
+                    cs['status'] = 'in_progress'
+            status_file.write_text(json.dumps(chunk_status, indent=2))
+
+            rework_count = 0
+            rework_context = ''
+
+            while True:
+                # Step 6a: Developer implements
+                chunk_task = (
+                    f"Implement chunk {chunk_id}: {description}\n"
+                    f"Files: {', '.join(chunk.get('files', []))}\n"
+                    f"Acceptance criteria:\n"
+                    + '\n'.join(f'  - {a}' for a in chunk.get('acceptance', []))
+                )
+                if rework_context:
+                    chunk_task += f"\n\nREWORK INSTRUCTIONS:\n{rework_context}"
+
+                self.run_agent('developer', chunk_task)
+
+                # Step 6b: QA tests
+                self.run_agent('qa', f"Write and run tests for chunk {chunk_id}: {description}")
+
+                # Step 6c: E2E browser testing (if UI-visible)
+                if ui_visible:
+                    self.run_agent('e2e', f"Validate chunk {chunk_id} in the browser: {description}")
+
+                # Step 6d: Reviewer reviews
+                review_result = self.run_agent(
+                    'reviewer',
+                    f"Review the changes for chunk {chunk_id}: {description}",
+                )
+
+                # Step 6e: Check review verdict
+                if 'CHANGES REQUESTED' in review_result or 'BLOCKED' in review_result:
+                    rework_count += 1
+                    if rework_count > max_reworks_per_chunk:
+                        print(
+                            f"\n⚠️  ESCALATION: Chunk {chunk_id} failed review "
+                            f"{rework_count} times. Requires human guidance."
+                        )
+                        chunk_results[chunk_id] = {
+                            'status': 'escalated',
+                            'rework_count': rework_count,
+                        }
+                        break
+                    # Extract rework context from reviewer output
+                    rework_context = review_result
+                    self.status('rework', 'developer', f'Rework cycle {rework_count} for {chunk_id}')
+                    continue  # re-enter the loop
+                else:
+                    # Chunk approved
+                    chunk_results[chunk_id] = {
+                        'status': 'completed',
+                        'rework_count': rework_count,
+                    }
+                    break
+
+            # Update chunk status
+            for cs in chunk_status['chunks']:
+                if cs['id'] == chunk_id:
+                    cs['status'] = chunk_results.get(chunk_id, {}).get('status', 'completed')
+                    cs['rework_count'] = rework_count
+            chunk_status['completed'] = sum(
+                1 for cs in chunk_status['chunks'] if cs['status'] == 'completed'
+            )
+            status_file.write_text(json.dumps(chunk_status, indent=2))
+
+            self.status(
+                'chunk-complete', 'developer',
+                f'{chunk_id} done ({chunk_status["completed"]}/{total})',
+            )
+
+        print(f"\n{'═' * 60}")
+        print(f"CHUNK LOOP COMPLETE — {chunk_status['completed']}/{total} chunks completed")
+        print(f"{'═' * 60}")
+
+        return chunk_results
+
     # ── Internals ───────────────────────────────────────────────────────────────
 
     def _run_stage_parallel(self, agent_keys: list[str], task: str) -> None:
@@ -555,6 +690,7 @@ Pipeline modes:
   --staged    Staged fan-out/fan-in pipeline with parallel stages (recommended for full runs)
   --parallel  All specified agents run in parallel with no context sharing
   --agents    Custom sequential pipeline (comma-separated agent names)
+  --chunks    Run the chunk execution loop from a chunks JSON file
 
 Platform:
   --platform github        GitHub CLI (gh) for PRs and issues (default)
@@ -590,6 +726,10 @@ Examples:
         '--platform', default='github', choices=['github', 'azure-devops'],
         help='Repository platform for PR/issue operations (default: github)',
     )
+    parser.add_argument(
+        '--chunks',
+        help='Path to a JSON file containing chunks for the chunk execution loop',
+    )
     parser.add_argument('--model', default='claude-sonnet-4-6', help='Claude model to use')
     parser.add_argument('--dry-run', action='store_true', help='Print plan without calling API')
     parser.add_argument('--output', help='Save results to JSON file')
@@ -613,7 +753,16 @@ Examples:
         platform=args.platform,
     )
 
-    if args.parallel and agent_list:
+    if args.chunks:
+        chunks_path = Path(args.chunks)
+        if not chunks_path.exists():
+            print(f"Error: Chunks file not found: {args.chunks}")
+            sys.exit(1)
+        chunks = json.loads(chunks_path.read_text())
+        if not isinstance(chunks, list):
+            chunks = chunks.get('chunks', [])
+        results = orchestrator.run_chunk_pipeline(args.task, chunks, args.root)
+    elif args.parallel and agent_list:
         results = orchestrator.run_parallel(args.task, agent_list, args.root)
     elif args.staged:
         results = orchestrator.run_staged_pipeline(args.task, project_root=args.root)

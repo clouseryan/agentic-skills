@@ -128,7 +128,7 @@ python3 dev-team/scripts/orchestrator.py \
 | Developer | `/dev-agent` | Implements features and fixes |
 | Database Engineer | `/db-agent` | Schema design, migrations, query optimization |
 | QA Engineer | `/qa-agent` | Test planning, test writing, coverage |
-| E2E Tester | `/e2e-agent` | Spin up app, browser/mobile automation, live workflow testing |
+| E2E Tester | `/e2e-agent` | Live browser testing via MCP (Claude Preview/Chrome), Playwright, mobile automation |
 | Code Reviewer | `/review-agent` | Security, performance, pattern compliance |
 | Documentation Writer | `/docs-agent` | READMEs, API docs, changelogs |
 | DevOps Engineer | `/devops-agent` | CI/CD, containers, infrastructure |
@@ -138,25 +138,48 @@ python3 dev-team/scripts/orchestrator.py \
 
 ## Workflow
 
-### Standard Feature Workflow
+### Standard Feature Workflow (Iterative Chunk-Based)
+
+The orchestrator breaks work into small, independently testable chunks. Each chunk goes through a full dev → test → review cycle before moving to the next.
 
 ```
-GitHub Issue
+Business Problem / GitHub Issue
      ↓
-Business Analyst → frames problem, researches domain, writes requirements doc
-     ↓                              ↓
-Research Analyst              Security Agent
-(codebase patterns)           (threat model)
-     ↓                              ↓
-           Software Architect (combines both)
-                    ↓
-         Developer ‖ Database Engineer  (parallel)
-                    ↓
-    QA Agent ‖ E2E Tester ‖ Docs Agent ‖ DevOps Agent  (parallel)
-                    ↓
-              Code Reviewer
-                    ↓
-             Lead Engineer → create PR → review → merge
+Phase 1: Intake — parse goal, detect platform, check prior context
+     ↓
+Phase 2: Business Analyst → frames problem, researches domain, writes requirements
+     ↓
+Phase 3: Research Analyst ‖ Security Agent  (parallel)
+         (codebase patterns)  (threat model)
+     ↓
+Phase 4: Software Architect → designs solution, produces CHUNKED WORK PLAN
+         (ordered list of small implementation chunks, 3-5 files each)
+     ↓
+Phase 5: Iterative Chunk Loop
+     ┌─────────────────────────────────────────────┐
+     │  FOR EACH CHUNK:                            │
+     │    Developer → implements chunk              │
+     │    QA Agent → writes + runs tests            │
+     │    E2E Tester → browser testing via MCP      │
+     │      (only if chunk is UI-visible)           │
+     │    Code Reviewer → reviews chunk             │
+     │      ↓                                       │
+     │    IF changes requested:                     │
+     │      → route findings back to Developer      │
+     │      → re-implement → re-test → re-review    │
+     │      (max 2 rework cycles, then escalate)    │
+     │      ↓                                       │
+     │    Commit chunk                              │
+     └─────────────────────────────────────────────┘
+     ↓
+Phase 6: Final Integration
+     Run full test suite + full E2E browser validation + comprehensive review
+     ↓
+Phase 7: Lead Engineer → create PR (MANDATORY) → final review → merge
+     IF changes requested: route back to Developer → fix → re-review
+     (max 3 cycles, then escalate)
+     ↓
+Phase 8: Completion — summary, context update
 ```
 
 ### Bug Fix Workflow
@@ -168,9 +191,11 @@ Research Analyst → finds root cause and related code
      ↓
 Developer → implements fix following existing patterns
      ↓
+QA Agent → writes regression test
+     ↓
 Code Reviewer → verifies fix, checks for regressions
      ↓
-Lead Engineer → PR + merge
+Lead Engineer → PR + merge (ALWAYS)
 ```
 
 ### Security Issue Workflow
@@ -184,8 +209,16 @@ Developer → applies remediation
      ↓
 Security Agent → verifies fix, runs final dep scan
      ↓
-Lead Engineer → PR + merge (on private branch if needed)
+Lead Engineer → PR + merge (ALWAYS, on private branch if needed)
 ```
+
+### Key Workflow Features
+
+- **Chunk-based execution**: Work is broken into small, independently testable pieces
+- **Feedback loops**: Reviewer and lead can route changes back to the developer
+- **Escalation protocol**: Max 2 rework cycles per chunk, 3 per PR before asking for human guidance
+- **MCP browser testing**: E2E agent uses Claude Preview or Claude in Chrome for real browser interaction
+- **Mandatory PR**: Lead always creates a PR — no implementation completes without one
 
 ---
 
@@ -198,6 +231,8 @@ All agents read and write to `.dev-team/` to share context across sessions:
 ├── context.md            # Project overview + accumulated agent findings
 ├── patterns.json         # AST-detected code patterns
 ├── status.json           # Live task and agent status
+├── chunks.md             # Architect's chunked work plan (created per feature)
+├── chunks-status.json    # Chunk execution tracking (progress, rework counts)
 ├── decisions/            # Architectural Decision Records
 │   ├── ADR-001-*.md
 │   └── ADR-002-*.md
@@ -291,11 +326,21 @@ python3 dev-team/scripts/orchestrator.py --task "..." --output results.json
 ```
 Stage 1: ba                           (requirements)
 Stage 2: research ‖ security          (parallel — codebase + threat model)
-Stage 3: architect                    (design, using both stage 2 outputs)
-Stage 4: developer ‖ database         (parallel — implementation)
-Stage 5: qa ‖ e2e ‖ docs ‖ devops    (parallel — quality + docs)
-Stage 6: reviewer                     (code review)
-Stage 7: lead                         (PR creation and merge)
+Stage 3: architect                    (design + chunked work plan)
+Stage 4: CHUNK LOOP                   (handled by orchestrator)
+         For each chunk: developer → qa → e2e (if UI) → reviewer
+         With rework sub-loop (max 2 cycles per chunk)
+Stage 5: docs ‖ devops               (parallel — post-implementation)
+Stage 6: lead                         (PR creation + final review — MANDATORY)
+```
+
+**Chunk execution loop** (used with `--chunks`):
+```bash
+# Run the chunk loop from a JSON file
+python3 dev-team/scripts/orchestrator.py \
+  --task "implement user auth" \
+  --chunks .dev-team/chunks.json \
+  --root .
 ```
 
 ---

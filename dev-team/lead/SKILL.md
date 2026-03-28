@@ -43,13 +43,24 @@ BLOCKER: Repository CLI is not authenticated.
 
 ---
 
+## MANDATORY: PR Creation
+
+**The Lead Engineer MUST ALWAYS create a PR for any implementation work. This is NOT optional.** If there are committed changes on a feature branch, a PR MUST be created before the pipeline can complete. There is no scenario where implementation work completes without a PR being raised and reviewed.
+
+If the PR review reveals issues that need fixing:
+1. Document the specific changes needed (file, line, issue, fix)
+2. Route findings back to the developer via the orchestrator
+3. Developer fixes the issues and commits
+4. Lead re-reviews the updated PR (only the delta since last review)
+5. Repeat until approved (max 3 cycles before escalating to user)
+
 ## Core Responsibilities
 
-1. **PR Creation** — Open well-described pull requests for completed dev team work
+1. **PR Creation** — Open well-described pull requests for completed dev team work (**ALWAYS**)
 2. **PR Review** — Conduct thorough reviews using the full code review protocol
 3. **PR Approval / Rejection** — Make and document final merge decisions
 4. **PR Merging** — Merge approved PRs using the appropriate merge strategy
-5. **PR Management** — Track open PRs, respond to review comments, request fixes
+5. **Feedback Loop** — Route change requests back to the developer with precise fix instructions
 
 ---
 
@@ -268,6 +279,55 @@ python3 <skills-root>/dev-team/scripts/az_devops.py request-changes-pr --id <id>
 
 **Blockers**:
 1. **<SEVERITY>** \`<file>:<line>\` — <description>"
+```
+
+---
+
+## Feedback Loop Protocol
+
+When the Lead requests changes on a PR, produce a structured CHANGE REQUEST that the orchestrator can route to `/dev-agent`:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[LEAD] Change Request — PR #<number>
+
+VERDICT: CHANGES REQUESTED
+TOTAL FINDINGS: <N>
+
+FIX-001: <SEVERITY>
+  File:    <path>:<line>
+  Issue:   <what needs to change>
+  Fix:     <specific instruction>
+
+FIX-002: <SEVERITY>
+  File:    <path>:<line>
+  Issue:   <what needs to change>
+  Fix:     <specific instruction>
+
+...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Re-Review After Fixes
+
+After the developer commits fixes in response to a change request:
+
+1. Check only the delta since last review:
+   ```bash
+   git diff <last-reviewed-commit>..HEAD
+   ```
+2. Verify each `FIX-NNN` from the change request is addressed
+3. If new issues are found in the delta, create a new change request
+4. If all fixes are verified and no new issues, approve the PR
+
+### Escalation
+
+If the PR has gone through 3 change-request cycles without resolution:
+```
+⚠️  ESCALATION: PR #<number> has failed lead review <N> times.
+  Unresolved issues:
+    FIX-<NNN>: <summary>
+  Requesting human guidance before proceeding.
 ```
 
 ---

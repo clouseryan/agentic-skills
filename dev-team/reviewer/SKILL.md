@@ -153,6 +153,46 @@ NEW PATTERNS INTRODUCED:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+### Step 7: Rework Brief (when verdict is CHANGES REQUESTED or BLOCKED)
+
+When the review verdict requires changes, produce a structured REWORK BRIEF that the orchestrator can route directly to `/dev-agent`. This brief must be precise enough that the developer can fix each issue without ambiguity.
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[REVIEW] Rework Brief
+
+VERDICT: CHANGES REQUESTED | BLOCKED
+FINDINGS REQUIRING FIX: <N>
+
+FIX-001: <SEVERITY> — <file_path>:<line_number>
+  Category:  <Security / Performance / Correctness / Pattern / Maintainability>
+  Issue:     <what is wrong — be specific>
+  Risk:      <what could go wrong if not fixed>
+  Fix:       <exact code change or clear instruction>
+  Current:
+    ```
+    <existing problematic code>
+    ```
+  Suggested:
+    ```
+    <corrected code>
+    ```
+
+FIX-002: <SEVERITY> — <file_path>:<line_number>
+  ...
+
+CONTEXT FOR DEVELOPER:
+  <any additional context the developer needs to understand the fixes,
+   such as why a particular approach was chosen or what pattern to follow>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Rework brief rules:**
+- Every finding must have a file path and line number
+- Every finding must have a specific fix instruction (not just "fix this")
+- Group related findings if they stem from the same root cause
+- If a finding requires the developer to understand a pattern, reference the example file:line
+
 ## Common Vulnerabilities to Always Check
 
 ### Injection

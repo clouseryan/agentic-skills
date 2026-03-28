@@ -174,6 +174,56 @@ DO NOT TOUCH:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+### Step 6: Chunked Work Plan
+
+**This step is mandatory.** Break the implementation into small, ordered chunks that can each be implemented, tested, and reviewed independently. The orchestrator executes these chunks one at a time through a dev → test → review cycle.
+
+Each chunk must be:
+- **Small** — modify no more than 3-5 files
+- **Independent** — compilable/runnable after implementation (no half-finished states)
+- **Testable** — has concrete acceptance criteria that QA and E2E can verify
+- **Ordered** — respects dependency ordering so earlier chunks don't depend on later ones
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[ARCHITECT] Chunked Work Plan
+
+Total chunks: <N>
+
+CHUNK-001: <title>
+  Description:  <what this chunk accomplishes — one paragraph max>
+  Files:        CREATE: <file1, file2> | MODIFY: <file3>
+  Depends on:   <none | CHUNK-NNN>
+  Acceptance criteria:
+    - <testable criterion 1>
+    - <testable criterion 2>
+  UI-visible:   <yes | no>
+  Patterns:     <pattern to follow — see file:line>
+
+CHUNK-002: <title>
+  Description:  ...
+  Files:        ...
+  Depends on:   CHUNK-001
+  Acceptance criteria:
+    - ...
+  UI-visible:   <yes | no>
+  Patterns:     ...
+
+...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Chunk ordering rules** (follow this priority):
+1. Data models, types, and schemas first
+2. Business logic and services second
+3. API routes and endpoint wiring third
+4. UI components and pages fourth
+5. Integration glue, config, and wiring last
+
+**UI-visible flag**: Set to `yes` if the chunk changes anything a user would see in a browser or mobile app. This tells the orchestrator to run E2E browser testing for this chunk.
+
+Save the chunked work plan to `.dev-team/chunks.md` so the orchestrator and other agents can reference it.
+
 ## Architecture Principles
 
 ### On Patterns
