@@ -101,7 +101,13 @@ Confirm:
 ```bash
 git log --oneline origin/main..HEAD
 git diff origin/main..HEAD --stat
-# Also read .dev-team/context.md and .dev-team/decisions/ for ADRs
+
+# Read workspace context
+# cat .dev-team/context.md
+
+# Find accepted ADRs relevant to this PR for the PR description
+python3 <skills-root>/dev-team/scripts/workspace.py query \
+  --type adr --status accepted --format table
 ```
 
 ### Step 3: Create the PR

@@ -26,6 +26,12 @@ Read from `.dev-team/`:
 - `patterns.json` — established patterns to follow
 - Any prior ADRs in `decisions/`
 
+Query for related prior decisions:
+```bash
+python3 <skills-root>/dev-team/scripts/workspace.py query \
+  --type adr --tags "<relevant domain tags>" --format table
+```
+
 Clarify with the user if requirements are ambiguous. Ask once, precisely.
 
 ### Step 2: Existing Pattern Assessment
@@ -135,9 +141,11 @@ async flows, or non-obvious data movement.
 
 ### Step 4: Save ADR
 ```bash
-# Save the ADR
+# Save the ADR — include tags (domain keywords) and deciders for queryability
 python3 <skills-root>/dev-team/scripts/workspace.py new-adr \
   --title "<decision title>" \
+  --tags "<comma-separated domain tags, e.g. auth,security,api>" \
+  --deciders "architect-agent,<other deciders>" \
   --content "<adr content>"
 ```
 

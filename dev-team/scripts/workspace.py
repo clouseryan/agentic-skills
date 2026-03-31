@@ -22,10 +22,18 @@ Usage:
   python3 workspace.py check-conflicts
   python3 workspace.py rollback --to-stage N
   python3 workspace.py show-log
+  python3 workspace.py new-requirement --title "Auth Feature" --feature auth --tags auth,users
+  python3 workspace.py query --type adr --status accepted --tags auth
+  python3 workspace.py search --text "JWT"
+  python3 workspace.py migrate-frontmatter [--dry-run]
 
 Environment:
   DEV_TEAM_REDIS_URL   Redis connection URL for real-time state (optional)
   DEV_TEAM_REDIS_TTL   Key TTL in seconds (default: 86400)
+  python3 workspace.py new-requirement --title "Auth Feature" --feature auth --tags auth,users
+  python3 workspace.py query --type adr --status accepted --tags auth
+  python3 workspace.py search --text "JWT"
+  python3 workspace.py migrate-frontmatter [--dry-run]
 """
 
 import argparse
@@ -45,6 +53,85 @@ STATUS_FILE = 'status.json'
 DECISIONS_DIR = 'decisions'
 REQUIREMENTS_DIR = 'requirements'
 CONTEXT_HISTORY_DIR = 'context-history'
+
+
+# ─── Frontmatter utilities ─────────────────────────────────────────────────────
+
+def parse_frontmatter(text: str) -> tuple:
+    """Parse YAML frontmatter from markdown text.
+
+    Returns (frontmatter_dict, body_text). Returns ({}, full_text) when no
+    frontmatter block is present, preserving backward compatibility.
+    """
+    match = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+    if not match:
+        return {}, text
+
+    fm = {}
+    for line in match.group(1).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        key, _, raw_value = line.partition(':')
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if raw_value == 'null':
+            fm[key] = None
+        elif raw_value.startswith('[') and raw_value.endswith(']'):
+            inner = raw_value[1:-1]
+            fm[key] = [v.strip().strip('"\'') for v in inner.split(',') if v.strip()]
+        else:
+            fm[key] = raw_value
+
+    body = text[match.end():]
+    return fm, body
+
+
+def render_frontmatter(data: dict) -> str:
+    """Serialize a dict to a YAML frontmatter block string."""
+    lines = ['---']
+    for key, value in data.items():
+        if value is None:
+            lines.append(f'{key}: null')
+        elif isinstance(value, list):
+            items = ', '.join(str(v) for v in value)
+            lines.append(f'{key}: [{items}]')
+        else:
+            lines.append(f'{key}: {value}')
+    lines.append('---')
+    return '\n'.join(lines) + '\n'
+
+
+def load_artifact(path: Path) -> tuple:
+    """Load frontmatter and body from a markdown artifact file.
+
+    Falls back to extracting **Status** from bold markdown headers for legacy
+    files. Sets fm['_legacy'] = True when no YAML frontmatter was found.
+    """
+    text = path.read_text()
+    fm, body = parse_frontmatter(text)
+    if not fm:
+        m = re.search(r'\*\*Status\*\*:\s*(\w+)', body)
+        if m:
+            fm['status'] = m.group(1).lower()
+        # Extract title from first heading
+        m_title = re.search(r'^#\s+(.+)', body, re.MULTILINE)
+        if m_title:
+            fm['title'] = m_title.group(1).strip()
+        fm['_legacy'] = True
+    return fm, body
+
+
+def _extract_snippet(text: str, search_term: str, context_lines: int = 1) -> str:
+    """Return a short snippet of text around the first match of search_term."""
+    lines = text.splitlines()
+    term_lower = search_term.lower()
+    for i, line in enumerate(lines):
+        if term_lower in line.lower():
+            start = max(0, i - context_lines)
+            end = min(len(lines), i + context_lines + 1)
+            return ' | '.join(lines[start:end]).strip()
+    return ''
 
 
 # ─── Workspace resolution ──────────────────────────────────────────────────────
@@ -291,14 +378,28 @@ def cmd_new_adr(args):
     filename = f"ADR-{adr_num}-{slug}.md"
     filepath = decisions_dir / filename
 
+    tag_list = [t.strip() for t in getattr(args, 'tags', '').split(',') if t.strip()]
+    decider_list = [d.strip() for d in getattr(args, 'deciders', '').split(',') if d.strip()]
+    fm = {
+        'id': f'ADR-{adr_num}',
+        'title': args.title,
+        'type': 'adr',
+        'status': 'proposed',
+        'date': datetime.now().strftime('%Y-%m-%d'),
+        'tags': tag_list,
+        'deciders': decider_list,
+        'supersedes': getattr(args, 'supersedes', None),
+        'related': [],
+    }
+
     if args.content:
-        content = args.content
+        content = render_frontmatter(fm) + args.content
     else:
-        content = f"""# ADR-{adr_num}: {args.title}
+        body = f"""# ADR-{adr_num}: {args.title}
 
 **Date**: {datetime.now().strftime('%Y-%m-%d')}
 **Status**: Proposed
-**Deciders**: Dev Team
+**Deciders**: {', '.join(decider_list) if decider_list else 'Dev Team'}
 
 ## Context
 
@@ -314,6 +415,7 @@ _(State the decision clearly)_
 - **Negative**:
 - **Risks**:
 """
+        content = render_frontmatter(fm) + body
 
     filepath.write_text(content)
     print(f"ADR created: {filepath}")
@@ -341,13 +443,290 @@ def cmd_list_adrs(args):
     print(f"{'─' * 55}")
     for adr in adrs:
         try:
-            content = adr.read_text()
-            status_match = re.search(r'\*\*Status\*\*:\s*(\w+)', content)
-            status = status_match.group(1) if status_match else 'unknown'
+            fm, _ = load_artifact(adr)
+            status = fm.get('status', 'unknown')
+            tags_str = ', '.join(fm.get('tags', []))
+            tags_display = f" [{tags_str}]" if tags_str else ''
         except Exception:
             status = 'unknown'
-        print(f"  {adr.name:<50} [{status}]")
+            tags_display = ''
+        print(f"  {adr.name:<50} [{status}]{tags_display}")
     print()
+
+
+def cmd_new_requirement(args):
+    """Create a new requirements document."""
+    workspace = find_workspace(
+        getattr(args, 'project_root', None),
+        getattr(args, 'workspace_root', None),
+    )
+    requirements_dir = workspace / REQUIREMENTS_DIR
+    requirements_dir.mkdir(parents=True, exist_ok=True)
+
+    existing = list(requirements_dir.glob('REQ-*.md'))
+    next_num = len(existing) + 1
+    req_num = f"{next_num:03d}"
+
+    slug = re.sub(r'[^a-z0-9]+', '-', args.feature.lower()).strip('-')[:50]
+    filename = f"REQ-{req_num}-{slug}.md"
+    filepath = requirements_dir / filename
+
+    tag_list = [t.strip() for t in getattr(args, 'tags', '').split(',') if t.strip()]
+    agent_list = [a.strip() for a in getattr(args, 'agents', '').split(',') if a.strip()]
+    status = getattr(args, 'status', 'draft')
+    fm = {
+        'id': f'REQ-{req_num}',
+        'title': args.title,
+        'type': 'requirement',
+        'status': status,
+        'date': datetime.now().strftime('%Y-%m-%d'),
+        'feature': args.feature,
+        'tags': tag_list,
+        'agents': agent_list,
+    }
+
+    if args.content:
+        content = render_frontmatter(fm) + args.content
+    else:
+        body = f"""# REQ-{req_num}: {args.title}
+
+**Feature**: {args.feature}
+**Status**: {status.capitalize()}
+**Date**: {datetime.now().strftime('%Y-%m-%d')}
+
+## Problem Statement
+
+_(Describe the user need or problem being solved)_
+
+## Functional Requirements
+
+| ID | Requirement | Priority | Acceptance Criteria |
+|----|-------------|----------|---------------------|
+| FR-1 | ... | Must Have | ... |
+
+## Non-Functional Requirements
+
+| ID | Category | Requirement |
+|----|----------|-------------|
+| NFR-1 | ... | ... |
+
+## Out of Scope
+
+- ...
+
+## Open Questions
+
+| Question | Owner |
+|----------|-------|
+| ... | ... |
+"""
+        content = render_frontmatter(fm) + body
+
+    filepath.write_text(content)
+    print(f"Requirement created: {filepath}")
+    return str(filepath)
+
+
+def cmd_query(args):
+    """Query artifacts by frontmatter fields."""
+    workspace = find_workspace(
+        getattr(args, 'project_root', None),
+        getattr(args, 'workspace_root', None),
+    )
+
+    artifact_type = getattr(args, 'type', None)
+    filter_status = getattr(args, 'status', None)
+    filter_tags_raw = getattr(args, 'tags', None)
+    filter_tags = set(t.strip() for t in filter_tags_raw.split(',') if t.strip()) if filter_tags_raw else set()
+    filter_related = getattr(args, 'related', None)
+    filter_supersedes = getattr(args, 'supersedes', None)
+    fmt = getattr(args, 'format', 'json')
+
+    paths = []
+    if not artifact_type or artifact_type == 'adr':
+        decisions_dir = workspace / DECISIONS_DIR
+        if decisions_dir.exists():
+            paths.extend(sorted(decisions_dir.glob('ADR-*.md')))
+    if not artifact_type or artifact_type == 'requirement':
+        requirements_dir = workspace / REQUIREMENTS_DIR
+        if requirements_dir.exists():
+            paths.extend(sorted(requirements_dir.glob('*.md')))
+
+    results = []
+    for path in paths:
+        try:
+            fm, _ = load_artifact(path)
+        except Exception:
+            continue
+
+        if filter_status and fm.get('status', '').lower() != filter_status.lower():
+            continue
+        if filter_tags and not (filter_tags & set(fm.get('tags', []))):
+            continue
+        if filter_related and filter_related not in fm.get('related', []):
+            continue
+        if filter_supersedes and fm.get('supersedes') != filter_supersedes:
+            continue
+
+        results.append({
+            'id': fm.get('id', path.stem),
+            'title': fm.get('title', ''),
+            'type': fm.get('type', 'unknown'),
+            'status': fm.get('status', 'unknown'),
+            'date': fm.get('date', ''),
+            'tags': fm.get('tags', []),
+            'file': str(path),
+            'legacy': fm.get('_legacy', False),
+        })
+
+    if fmt == 'table':
+        if not results:
+            print("No matching artifacts.")
+            return
+        print(f"\n{'ID':<12} {'TYPE':<12} {'STATUS':<12} {'TAGS':<30} TITLE")
+        print('─' * 90)
+        for r in results:
+            tags_str = ', '.join(r['tags'])
+            print(f"  {r['id']:<10} {r['type']:<12} {r['status']:<12} {tags_str:<30} {r['title']}")
+        print()
+    else:
+        print(json.dumps(results, indent=2))
+
+
+def cmd_search(args):
+    """Full-text search across artifact bodies."""
+    workspace = find_workspace(
+        getattr(args, 'project_root', None),
+        getattr(args, 'workspace_root', None),
+    )
+
+    artifact_type = getattr(args, 'type', None)
+    search_text = args.text
+    fmt = getattr(args, 'format', 'json')
+
+    paths = []
+    if not artifact_type or artifact_type == 'adr':
+        decisions_dir = workspace / DECISIONS_DIR
+        if decisions_dir.exists():
+            paths.extend(sorted(decisions_dir.glob('ADR-*.md')))
+    if not artifact_type or artifact_type == 'requirement':
+        requirements_dir = workspace / REQUIREMENTS_DIR
+        if requirements_dir.exists():
+            paths.extend(sorted(requirements_dir.glob('*.md')))
+
+    results = []
+    for path in paths:
+        try:
+            full_text = path.read_text()
+            fm, _ = load_artifact(path)
+        except Exception:
+            continue
+
+        if search_text.lower() not in full_text.lower():
+            continue
+
+        results.append({
+            'id': fm.get('id', path.stem),
+            'title': fm.get('title', ''),
+            'type': fm.get('type', 'unknown'),
+            'status': fm.get('status', 'unknown'),
+            'tags': fm.get('tags', []),
+            'file': str(path),
+            'snippet': _extract_snippet(full_text, search_text),
+        })
+
+    if fmt == 'table':
+        if not results:
+            print(f"No matches for '{search_text}'.")
+            return
+        print(f"\nSearch results for '{search_text}' ({len(results)} match{'es' if len(results) != 1 else ''}):")
+        print('─' * 80)
+        for r in results:
+            print(f"  [{r['id']}] {r['title']}")
+            print(f"    {r['file']}")
+            if r['snippet']:
+                print(f"    ...{r['snippet']}...")
+            print()
+    else:
+        print(json.dumps(results, indent=2))
+
+
+def cmd_migrate_frontmatter(args):
+    """Backfill YAML frontmatter on existing legacy artifacts."""
+    workspace = find_workspace(
+        getattr(args, 'project_root', None),
+        getattr(args, 'workspace_root', None),
+    )
+
+    artifact_type = getattr(args, 'type', 'all')
+    dry_run = getattr(args, 'dry_run', False)
+
+    paths = []
+    if artifact_type in ('adr', 'all'):
+        decisions_dir = workspace / DECISIONS_DIR
+        if decisions_dir.exists():
+            paths.extend(sorted(decisions_dir.glob('ADR-*.md')))
+    if artifact_type in ('requirement', 'all'):
+        requirements_dir = workspace / REQUIREMENTS_DIR
+        if requirements_dir.exists():
+            paths.extend(sorted(requirements_dir.glob('*.md')))
+
+    migrated = 0
+    skipped = 0
+    for path in paths:
+        try:
+            fm, body = load_artifact(path)
+        except Exception as e:
+            print(f"  SKIP  {path.name}: read error ({e})")
+            continue
+
+        if not fm.get('_legacy'):
+            skipped += 1
+            continue
+
+        # Reconstruct frontmatter from body fields
+        stem = path.stem  # e.g. ADR-001-use-jwt
+        parts = stem.split('-', 2)
+        artifact_id = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else stem
+
+        m_title = re.search(r'^#\s+(?:ADR-\d+:\s*|REQ-\d+:\s*)?(.+)', body, re.MULTILINE)
+        title = m_title.group(1).strip() if m_title else fm.get('title', stem)
+
+        m_date = re.search(r'\*\*Date\*\*:\s*(\S+)', body)
+        m_deciders = re.search(r'\*\*Deciders\*\*:\s*(.+)', body)
+
+        guessed_type = 'adr' if artifact_id.startswith('ADR') else 'requirement'
+        new_fm = {
+            'id': artifact_id,
+            'title': title,
+            'type': guessed_type,
+            'status': fm.get('status', 'proposed'),
+            'date': m_date.group(1) if m_date else datetime.now().strftime('%Y-%m-%d'),
+        }
+        if guessed_type == 'adr':
+            deciders_raw = m_deciders.group(1).strip() if m_deciders else ''
+            new_fm['tags'] = []
+            new_fm['deciders'] = [d.strip() for d in deciders_raw.split(',') if d.strip()]
+            new_fm['supersedes'] = None
+            new_fm['related'] = []
+        else:
+            new_fm['feature'] = parts[2].replace('-', ' ') if len(parts) >= 3 else ''
+            new_fm['tags'] = []
+            new_fm['agents'] = []
+
+        new_content = render_frontmatter(new_fm) + body
+
+        if dry_run:
+            print(f"  DRY-RUN  {path.name}")
+            print(render_frontmatter(new_fm))
+        else:
+            path.write_text(new_content)
+            print(f"  MIGRATED  {path.name}")
+
+        migrated += 1
+
+    action = "Would migrate" if dry_run else "Migrated"
+    print(f"\n{action} {migrated} file(s). {skipped} already had frontmatter.")
 
 
 def cmd_set_status(args):
@@ -810,11 +1189,49 @@ def main():
     p = subparsers.add_parser('new-adr', help='Create a new ADR')
     p.add_argument('--title', required=True)
     p.add_argument('--content', help='ADR content (uses template if omitted)')
+    p.add_argument('--tags', default='', help='Comma-separated tags (e.g. auth,security)')
+    p.add_argument('--deciders', default='', help='Comma-separated decider names')
+    p.add_argument('--supersedes', default=None, help='ADR ID this supersedes (e.g. ADR-001)')
     p.set_defaults(func=cmd_new_adr)
 
     # list-adrs
     p = subparsers.add_parser('list-adrs', help='List all ADRs')
     p.set_defaults(func=cmd_list_adrs)
+
+    # new-requirement
+    p = subparsers.add_parser('new-requirement', help='Create a new requirements document')
+    p.add_argument('--title', required=True)
+    p.add_argument('--feature', required=True, help='Feature slug (used for filename)')
+    p.add_argument('--status', default='draft',
+                   choices=['draft', 'approved', 'implemented', 'deprecated'])
+    p.add_argument('--tags', default='', help='Comma-separated tags')
+    p.add_argument('--agents', default='', help='Comma-separated agent names')
+    p.add_argument('--content', help='Full content (uses template if omitted)')
+    p.set_defaults(func=cmd_new_requirement)
+
+    # query
+    p = subparsers.add_parser('query', help='Query artifacts by frontmatter fields')
+    p.add_argument('--type', choices=['adr', 'requirement'], help='Filter by artifact type')
+    p.add_argument('--status', help='Filter by status (e.g. proposed, accepted, draft)')
+    p.add_argument('--tags', help='Comma-separated tags (any match)')
+    p.add_argument('--related', help='Find artifacts referencing this ID')
+    p.add_argument('--supersedes', help='Find artifacts that supersede this ID')
+    p.add_argument('--format', choices=['json', 'table'], default='json')
+    p.set_defaults(func=cmd_query)
+
+    # search
+    p = subparsers.add_parser('search', help='Full-text search across artifact bodies')
+    p.add_argument('--text', required=True, help='Text to search for')
+    p.add_argument('--type', choices=['adr', 'requirement'], help='Limit search to artifact type')
+    p.add_argument('--format', choices=['json', 'table'], default='json')
+    p.set_defaults(func=cmd_search)
+
+    # migrate-frontmatter
+    p = subparsers.add_parser('migrate-frontmatter',
+                               help='Backfill YAML frontmatter on existing artifacts')
+    p.add_argument('--type', choices=['adr', 'requirement', 'all'], default='all')
+    p.add_argument('--dry-run', action='store_true', help='Print changes without writing')
+    p.set_defaults(func=cmd_migrate_frontmatter)
 
     # set-status
     p = subparsers.add_parser('set-status', help='Update agent status')

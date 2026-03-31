@@ -180,8 +180,14 @@ OUT OF SCOPE:
 
 Save the full requirements document to `.dev-team/`:
 ```bash
-# Write requirements to shared workspace
-# (use Write tool to create .dev-team/requirements/<feature-slug>.md)
+# Create requirements document in shared workspace
+python3 <skills-root>/dev-team/scripts/workspace.py new-requirement \
+  --title "<feature name>" \
+  --feature "<feature-slug>" \
+  --status draft \
+  --tags "<comma-separated domain tags, e.g. auth,billing,api>" \
+  --agents "ba-agent,architect-agent" \
+  --content "<full requirements markdown body>"
 ```
 
 ### Step 7: Iterative Refinement
@@ -192,6 +198,12 @@ After the Architect proposes a design:
 - Flag any design decisions that conflict with requirements
 - Update requirements if new information emerges
 - Record requirement changes with rationale
+
+Check for existing related requirements before creating new ones:
+```bash
+python3 <skills-root>/dev-team/scripts/workspace.py query \
+  --type requirement --tags "<relevant tags>" --format table
+```
 
 ## BA Tools & Research Techniques
 
