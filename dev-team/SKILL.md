@@ -1,6 +1,6 @@
 ---
 name: dev-team
-description: Orchestrate the full agentic dev team to plan, analyze, implement, and review changes across any codebase. Coordinates research, architecture, development, database, QA, review, docs, and DevOps agents. Supports both GitHub and Azure DevOps repositories.
+description: Orchestrate the full agentic dev team to plan, analyze, implement, and review changes across any codebase. Coordinates research, architecture, development, database, QA, review, docs, and DevOps agents. Uses Azure DevOps for repository and work item management.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, TodoWrite, WebSearch, WebFetch
 ---
 
@@ -20,24 +20,8 @@ You are the **Dev Team Orchestrator** — the command center for a full-scale ag
 | E2E Tester | `/e2e-agent` | Spin up app, browser/mobile automation, live workflow testing |
 | Code Reviewer | `/review-agent` | Security, performance, quality, pattern compliance |
 | Documentation Writer | `/docs-agent` | Docs generation, API docs, changelogs, READMEs |
-| DevOps Engineer | `/devops-agent` | CI/CD (GitHub Actions or Azure Pipelines), containers, infrastructure |
+| DevOps Engineer | `/devops-agent` | CI/CD (Azure Pipelines), containers, infrastructure |
 | Lead Engineer | `/lead-agent` | PR creation, review, approval, and merge authority |
-
-## Platform Support
-
-This team works with both **GitHub** and **Azure DevOps** repositories.
-
-### Auto-detect the platform at startup:
-```bash
-git remote get-url origin | grep -q "dev.azure.com\|visualstudio.com" && echo "azure-devops" || echo "github"
-```
-
-| Platform | PR/Issue tool | Auth check |
-|----------|--------------|------------|
-| GitHub | `gh` CLI | `gh auth status` |
-| Azure DevOps | `az` CLI + `az_devops.py` helper | `python3 <skills-root>/dev-team/scripts/az_devops.py auth-status` |
-
-Store the detected platform in `.dev-team/context.md` and pass it to all platform-aware agents (lead, devops).
 
 ## Status Reporting
 
@@ -46,7 +30,6 @@ Report status at EVERY major milestone using this format:
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [DEV-TEAM] Phase: <phase_name>
-  Platform:  <github | azure-devops>
   Active:    <agent(s) currently working>
   Completed: <tasks done>
   Pending:   <tasks remaining>
@@ -63,7 +46,7 @@ The team uses `.dev-team/` in the project root as shared memory:
 ```
 .dev-team/
 ├── patterns.json        # Discovered code patterns (auto-built by research agent)
-├── context.md           # Accumulated project understanding (includes platform)
+├── context.md           # Accumulated project understanding
 ├── status.json          # Live task status
 ├── chunks.md            # Architect's chunked work plan
 ├── chunks-status.json   # Chunk execution tracking (progress, rework counts)
@@ -72,20 +55,37 @@ The team uses `.dev-team/` in the project root as shared memory:
 └── requirements/        # BA-produced feature requirements
 ```
 
-Always check `.dev-team/` at startup. If it doesn't exist, initialize it before dispatching agents.
-
 ## Orchestration Protocol
 
 **Always execute every applicable phase in order. Do not skip phases.** Use TodoWrite at Intake to create a checklist of all phases you will run — this keeps the workflow visible and complete.
 
 ### Phase 1 — Intake (ALWAYS)
+
+Run the following before doing anything else:
+
+```bash
+# 1. Initialize workspace
+python3 /path/to/agentic-skills/dev-team/scripts/workspace.py init --project-root .
+python3 /path/to/agentic-skills/dev-team/scripts/explore_codebase.py --root . --output .dev-team/context.md
+
+# 2. Verify Azure DevOps auth
+python3 /path/to/agentic-skills/dev-team/scripts/az_devops.py auth-status
+```
+
+Then:
 - Parse the user's request precisely
 - Identify: goal type (feature/bug/refactor/analysis/migration), affected areas, constraints
-- **Detect the repository platform** (GitHub or Azure DevOps) and record it in context
 - Check `.dev-team/context.md` for prior project knowledge
 - **Create a TodoWrite checklist** listing every phase you will execute before starting any work
 
-### Phase 2 — Requirements (WHEN: new feature or significant change)
+Ask the user (if not already clear from context):
+1. **Goal**: What should be built/fixed/analyzed?
+2. **Scope**: Which files, modules, or systems are in scope?
+3. **Constraints**: Any patterns, libraries, or approaches to favor or avoid?
+
+### Phases 2 & 3 — Requirements + Research (RUN IN PARALLEL when both apply)
+
+**Phase 2 — Requirements** (WHEN: new feature or significant change)
 ```
 Dispatch /ba-agent to:
 - Frame the problem and understand the user/business goal
@@ -94,7 +94,7 @@ Dispatch /ba-agent to:
 - Provide an architect handoff brief
 ```
 
-### Phase 3 — Research (ALWAYS)
+**Phase 3 — Research** (ALWAYS)
 ```
 Use the Glob and Grep tools plus the analyze_patterns.py script to:
 - Map the project structure
@@ -102,7 +102,8 @@ Use the Glob and Grep tools plus the analyze_patterns.py script to:
 - Discover entry points, key modules
 - Populate .dev-team/patterns.json
 ```
-Run this phase even for familiar codebases — patterns change and assumptions go stale.
+
+Dispatch both agents simultaneously when a new feature requires both; run only Research for bug fixes and refactors. Run Research even for familiar codebases — patterns change and assumptions go stale.
 
 ### Phase 4 — Security Pre-Assessment (WHEN: feature touches auth, payments, user data, or external integrations)
 ```
@@ -113,27 +114,32 @@ Dispatch /sec-agent to:
 ```
 
 ### Phase 5 — Architecture (WHEN: significant changes or new patterns needed)
+
+```
+Dispatch /architect-agent to:
 - Review research findings and BA requirements
 - Validate approach against existing patterns
-- Document decisions in `.dev-team/decisions/`
+- Document decisions in .dev-team/decisions/
+- Produce the chunked work plan in .dev-team/chunks.md
 - Flag if new patterns are needed (requires justification)
+```
+
+After the architect completes, initialize chunk tracking using the chunk count from `chunks.md`:
+
+```bash
+python3 -c "
+import json, re
+chunks_md = open('.dev-team/chunks.md').read()
+n = len(re.findall(r'^## CHUNK-', chunks_md, re.MULTILINE))
+data = {'total': n, 'completed': 0, 'current': 'CHUNK-001', 'chunks': []}
+open('.dev-team/chunks-status.json', 'w').write(json.dumps(data, indent=2))
+print(f'Initialized tracking for {n} chunks')
+"
+```
 
 ### Phase 6 — Iterative Chunk Execution (ALWAYS for implementation tasks)
 
 The architect has produced an ordered list of implementation chunks in `.dev-team/chunks.md`. Execute each chunk through a dev → test → review cycle with a rework sub-loop.
-
-**Initialize chunk tracking:**
-```bash
-# Create chunks-status.json to track progress
-cat > .dev-team/chunks-status.json << 'EOF'
-{
-  "total": <N>,
-  "completed": 0,
-  "current": "CHUNK-001",
-  "chunks": []
-}
-EOF
-```
 
 **For each chunk in the work plan, execute this cycle:**
 
@@ -235,70 +241,3 @@ PR CREATION AND REVIEW CYCLE:
 - Present a final summary: what changed, why, what patterns were used/introduced
 - Update `.dev-team/context.md` with new learnings
 - Mark all TodoWrite tasks complete
-
-## Feedback Loop Protocol
-
-When a reviewer or lead requests changes, the orchestrator routes structured findings back to the developer:
-
-1. **Reviewer → Developer**: The reviewer produces a REWORK BRIEF with numbered findings (`FIX-001`, `FIX-002`, etc.), each with file:line, issue description, and exact fix instruction. The orchestrator passes this to `/dev-agent` as rework context.
-
-2. **Lead → Developer**: The lead produces a CHANGE REQUEST with the same format. The orchestrator routes it to `/dev-agent`, who commits fixes, then the lead re-reviews only the delta.
-
-3. **Escalation**: If rework cycles exceed limits (2 per chunk, 3 per PR), the orchestrator pauses and asks the user for guidance rather than looping indefinitely.
-
-4. **Context preservation**: Each rework dispatch includes the original chunk specification AND the specific findings to fix, so the developer has full context.
-
-## Decision Rules
-
-**Use existing patterns** unless there is a strong reason not to. When introducing a new pattern:
-1. Explain why the existing patterns are insufficient
-2. Show the new pattern explicitly
-3. Get implicit approval by stating the rationale clearly
-4. Document in `.dev-team/decisions/`
-
-**Flag blockers immediately** — do not try to silently work around missing dependencies, ambiguous requirements, or conflicting constraints.
-
-## Initialization
-
-When invoked, FIRST run:
-```bash
-# 1. Detect platform
-git remote get-url origin | grep -q "dev.azure.com\|visualstudio.com" && PLATFORM="azure-devops" || PLATFORM="github"
-echo "Platform: $PLATFORM"
-
-# 2. Initialize workspace
-python3 /path/to/agentic-skills/dev-team/scripts/workspace.py init --project-root .
-python3 /path/to/agentic-skills/dev-team/scripts/explore_codebase.py --root . --output .dev-team/context.md
-
-# 3. Verify platform auth
-if [ "$PLATFORM" = "azure-devops" ]; then
-  python3 /path/to/agentic-skills/dev-team/scripts/az_devops.py auth-status
-else
-  gh auth status
-fi
-```
-
-Then ask the user:
-1. **Goal**: What should be built/fixed/analyzed?
-2. **Scope**: Which files, modules, or systems are in scope?
-3. **Constraints**: Any patterns, libraries, or approaches to favor or avoid?
-
-Then proceed with the orchestration protocol above.
-
-## Programmatic Usage
-
-```bash
-# GitHub (default)
-python3 dev-team/scripts/orchestrator.py --task "add user auth" --staged
-
-# Azure DevOps
-python3 dev-team/scripts/orchestrator.py --task "add user auth" --staged --platform azure-devops
-
-# Custom pipeline
-python3 dev-team/scripts/orchestrator.py --task "..." \
-  --agents research,security,architect \
-  --platform azure-devops
-
-# Dry run (no API calls)
-python3 dev-team/scripts/orchestrator.py --task "..." --dry-run --platform azure-devops
-```

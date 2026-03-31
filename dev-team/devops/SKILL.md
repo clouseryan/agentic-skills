@@ -1,6 +1,6 @@
 ---
 name: devops-agent
-description: Design and review CI/CD pipelines, Dockerfiles, infrastructure-as-code, deployment configs, and observability setups. Analyzes existing DevOps patterns and follows them. Supports GitHub Actions and Azure Pipelines, plus Docker, Kubernetes, and Terraform.
+description: Design and review CI/CD pipelines, Dockerfiles, infrastructure-as-code, deployment configs, and observability setups. Analyzes existing DevOps patterns and follows them. Supports Azure Pipelines, Docker, Kubernetes, and Terraform.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, TodoWrite
 ---
 
@@ -27,7 +27,6 @@ Find and read existing configuration:
 
 ```bash
 # CI/CD configs
-find . -name "*.yml" -path "*/.github/workflows/*" 2>/dev/null
 find . -name "azure-pipelines*.yml" 2>/dev/null
 find . -name "*.yml" -path "*/.gitlab-ci*" 2>/dev/null
 find . -name "Jenkinsfile" 2>/dev/null
@@ -43,7 +42,6 @@ find . -name "*.yaml" -path "*/k8s/*" 2>/dev/null
 ```
 
 Determine the CI/CD platform from what exists:
-- `.github/workflows/` → **GitHub Actions**
 - `azure-pipelines.yml` → **Azure Pipelines**
 - `.gitlab-ci.yml` → GitLab CI
 - `Jenkinsfile` → Jenkins
@@ -51,12 +49,12 @@ Determine the CI/CD platform from what exists:
 Report:
 ```
 STATUS: [DEVOPS] Infrastructure audit complete
-  CI/CD:          <GitHub Actions | Azure Pipelines | ...>
+  CI/CD:          <Azure Pipelines | GitLab CI | Jenkins | ...>
   Containers:     <Docker version / base images used>
   Cloud:          <AWS | Azure | GCP | self-hosted>
   Orchestration:  <Kubernetes | ECS | Azure Container Apps | none>
   IaC:            <Terraform | Bicep | Pulumi | none>
-  Secrets:        <Azure Key Vault | AWS Secrets Manager | GitHub Secrets | env vars>
+  Secrets:        <Azure Key Vault | AWS Secrets Manager | env vars>
   Environments:   <dev/staging/prod setup>
 ```
 
@@ -64,44 +62,7 @@ STATUS: [DEVOPS] Infrastructure audit complete
 
 ## Step 2: CI/CD Pipeline Design
 
-Follow the exact format used by the existing CI/CD system. If there is none, use the platform detected from the git remote.
-
-### GitHub Actions
-
-```yaml
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up runtime
-        uses: actions/setup-node@v4   # or setup-python, setup-go, etc.
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Test
-        run: npm test
-
-      - name: Build
-        run: npm run build
-```
+Follow the exact format used by the existing CI/CD system. If there is none, default to Azure Pipelines.
 
 ### Azure Pipelines (azure-pipelines.yml)
 
@@ -170,18 +131,6 @@ stages:
                 - script: echo "Deploy step here"
                   displayName: Deploy
 ```
-
-### Azure Pipelines — Key Differences from GitHub Actions
-
-| Concern | GitHub Actions | Azure Pipelines |
-|---------|---------------|-----------------|
-| Secrets | `${{ secrets.MY_SECRET }}` | `$(MY_SECRET)` (from variable group or pipeline variables) |
-| Environments | Environments (with protection rules) | Environments + deployment jobs |
-| Reuse | Reusable workflows | Templates (`extends:`, `template:`) |
-| Artifact publish | `actions/upload-artifact` | `PublishPipelineArtifact@1` |
-| Test results | `dorny/test-reporter` | `PublishTestResults@2` |
-| Docker | `docker/build-push-action` | `Docker@2` task |
-| Caching | `actions/cache` | `Cache@2` task |
 
 ---
 
@@ -293,7 +242,6 @@ Structured log format (match existing pattern):
 
 | Platform | Recommended approach |
 |----------|---------------------|
-| GitHub Actions | GitHub Secrets → `${{ secrets.NAME }}` |
 | Azure Pipelines | Variable Groups linked to Azure Key Vault → `$(NAME)` |
 | Kubernetes | Kubernetes Secrets or CSI Secret Store driver |
 | Local dev | `.env` file (gitignored) |
@@ -328,14 +276,14 @@ PIPELINE STAGES:
   <list the CI/CD stages designed>
 
 PLATFORM:
-  <GitHub Actions | Azure Pipelines>
+  <Azure Pipelines | other>
 
 SECURITY ITEMS:
   <any security improvements made>
 
 ENVIRONMENT VARIABLES NEEDED:
   <list of secrets/env vars required>
-  (Store in: <GitHub Secrets | Azure Key Vault variable group>)
+  (Store in: Azure Key Vault variable group)
 
 DEPLOYMENT NOTES:
   <anything the team needs to do manually>
@@ -365,7 +313,6 @@ MONITORING:
 /devops-agent <infrastructure task>
 
 Examples:
-  /devops-agent create a GitHub Actions CI/CD pipeline for this Node.js project
   /devops-agent create an Azure Pipelines YAML for this Python project
   /devops-agent optimize this Dockerfile for production use
   /devops-agent set up Terraform for deploying to Azure Container Apps
